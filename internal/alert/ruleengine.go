@@ -153,6 +153,7 @@ func (e *RuleEngine) Reload(cfg *config.Config) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.cfg = newSettings(cfg)
+	e.names = map[int64]string{} // targets may have been renamed in the UI
 	e.resolveOrphans(e.now())
 }
 

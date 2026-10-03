@@ -7,7 +7,9 @@ const StarterConfig = `# pathwatch configuration (written on first start; edit f
 # Relative paths in this file are relative to the directory of this file.
 # Environment overrides: PATHWATCH_CONFIG, PATHWATCH_DB, PATHWATCH_LISTEN,
 # PATHWATCH_USER, PATHWATCH_PASSWORD.
-# Targets can also be added, paused and removed in the web UI.
+# Targets can also be added, edited, paused and removed in the web UI.
+# Settings changed in the web UI (Settings page, target editor) are stored in the
+# database and take precedence over this file; the UI can revert them to this file.
 
 # Address to serve the web UI on. When this is not a loopback address, Basic auth
 # is always on: set PATHWATCH_PASSWORD, or pathwatch generates a password and
@@ -45,10 +47,21 @@ defaults:                                 # inherited by every target/probe
   icmp_interval: 2s
   icmp_timeout: 2s
   tcp_interval: 10s
+  tcp_timeout: 5s
   http_interval: 30s
+  http_timeout: 10s
   dns_interval: 30s
+  dns_timeout: 3s
   path_rediscovery: 5m
   max_hops: 30
+  retries: 0                              # retry failed HTTP/TCP/DNS probes (0-10); ICMP never retries
+
+# Targets: host is a hostname (FQDN such as example.com), an IPv4 or an IPv6 address.
+# Hop tracing is IPv4-only for now; HTTP and TCP probes work over IPv6 too.
+
+status:                                   # when a target shows as "degraded"
+  degraded_loss_pct: 5                    # end-to-end loss above this (last 5 minutes)
+  degraded_http_success_pct: 95           # HTTP success rate below this (last 5 minutes)
 
 targets:
   - name: cloudflare

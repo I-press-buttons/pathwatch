@@ -47,9 +47,15 @@ type Config struct {
 	Enrich  EnrichConfig  `yaml:"enrich"`
 
 	Defaults  Defaults         `yaml:"defaults"`
+	Status    StatusConfig     `yaml:"status"`
 	Targets   []TargetConfig   `yaml:"targets"`
 	DNSProbes []DNSProbeConfig `yaml:"dns_probes"`
 	Alerts    AlertsConfig     `yaml:"alerts"`
+
+	// UITargets are the definitions of the targets added in the web UI (stored in the
+	// database, never in the file). They are set on effective configurations only, so per-target
+	// alert settings apply to them as well.
+	UITargets []TargetConfig `yaml:"-"`
 
 	// Path is the file the configuration was loaded from.
 	Path string `yaml:"-"`
@@ -97,66 +103,85 @@ type EnrichConfig struct {
 	ASNDB      string `yaml:"asn_db"`
 }
 
-// Defaults are inherited by every target and probe.
+// Defaults are inherited by every target and probe. In JSON (the web API) durations are
+// milliseconds and a zero or missing value means "the built-in default".
 type Defaults struct {
-	ICMPInterval    Duration `yaml:"icmp_interval"`
-	ICMPTimeout     Duration `yaml:"icmp_timeout"`
-	TCPInterval     Duration `yaml:"tcp_interval"`
-	TCPTimeout      Duration `yaml:"tcp_timeout"`
-	HTTPInterval    Duration `yaml:"http_interval"`
-	HTTPTimeout     Duration `yaml:"http_timeout"`
-	DNSInterval     Duration `yaml:"dns_interval"`
-	DNSTimeout      Duration `yaml:"dns_timeout"`
-	PathRediscovery Duration `yaml:"path_rediscovery"`
-	MaxHops         int      `yaml:"max_hops"`
+	ICMPInterval    Duration `yaml:"icmp_interval" json:"icmp_interval_ms"`
+	ICMPTimeout     Duration `yaml:"icmp_timeout" json:"icmp_timeout_ms"`
+	TCPInterval     Duration `yaml:"tcp_interval" json:"tcp_interval_ms"`
+	TCPTimeout      Duration `yaml:"tcp_timeout" json:"tcp_timeout_ms"`
+	HTTPInterval    Duration `yaml:"http_interval" json:"http_interval_ms"`
+	HTTPTimeout     Duration `yaml:"http_timeout" json:"http_timeout_ms"`
+	DNSInterval     Duration `yaml:"dns_interval" json:"dns_interval_ms"`
+	DNSTimeout      Duration `yaml:"dns_timeout" json:"dns_timeout_ms"`
+	PathRediscovery Duration `yaml:"path_rediscovery" json:"path_rediscovery_ms"`
+	MaxHops         int      `yaml:"max_hops" json:"max_hops"`
+	// Retries is how many times a failed HTTP, TCP or DNS probe is retried before the
+	// failure is recorded. ICMP traces never retry: an unanswered probe is the loss being measured.
+	Retries int `yaml:"retries" json:"retries"`
+}
+
+// MaxRetries bounds the retries setting.
+const MaxRetries = 10
+
+// StatusConfig sets when a target is shown as "degraded" (the yellow status in the UI).
+type StatusConfig struct {
+	// DegradedLossPct: end-to-end loss over the last 5 minutes above this percentage.
+	DegradedLossPct float64 `yaml:"degraded_loss_pct" json:"degraded_loss_pct"`
+	// DegradedHTTPSuccessPct: HTTP success rate over the last 5 minutes below this percentage.
+	DegradedHTTPSuccessPct float64 `yaml:"degraded_http_success_pct" json:"degraded_http_success_pct"`
 }
 
 // TargetConfig is one monitored destination. Zero-valued override fields inherit defaults.
 type TargetConfig struct {
-	Name string `yaml:"name"`
-	Host string `yaml:"host"`
+	Name string `yaml:"name" json:"name"`
+	// Host is a hostname (FQDN or short name), an IPv4 address or an IPv6 address.
+	Host string `yaml:"host" json:"host"`
 
-	ICMPInterval    Duration `yaml:"icmp_interval"`
-	ICMPTimeout     Duration `yaml:"icmp_timeout"`
-	TCPInterval     Duration `yaml:"tcp_interval"`
-	HTTPInterval    Duration `yaml:"http_interval"`
-	PathRediscovery Duration `yaml:"path_rediscovery"`
-	MaxHops         int      `yaml:"max_hops"`
+	ICMPInterval    Duration `yaml:"icmp_interval" json:"icmp_interval_ms,omitempty"`
+	ICMPTimeout     Duration `yaml:"icmp_timeout" json:"icmp_timeout_ms,omitempty"`
+	TCPInterval     Duration `yaml:"tcp_interval" json:"tcp_interval_ms,omitempty"`
+	HTTPInterval    Duration `yaml:"http_interval" json:"http_interval_ms,omitempty"`
+	PathRediscovery Duration `yaml:"path_rediscovery" json:"path_rediscovery_ms,omitempty"`
+	MaxHops         int      `yaml:"max_hops" json:"max_hops,omitempty"`
+	Retries         *int     `yaml:"retries" json:"retries,omitempty"` // nil inherits defaults.retries
 
-	Probes []ProbeConfig `yaml:"probes"`
-	Alerts TargetAlerts  `yaml:"alerts"`
+	Probes []ProbeConfig `yaml:"probes" json:"probes"`
+	Alerts TargetAlerts  `yaml:"alerts" json:"alerts"`
 }
 
 // ProbeConfig is one probe of a target (icmp-trace, http or tcp).
 type ProbeConfig struct {
-	Type     string   `yaml:"type"`
-	Interval Duration `yaml:"interval"`
-	Timeout  Duration `yaml:"timeout"`
+	Type     string   `yaml:"type" json:"type"`
+	Interval Duration `yaml:"interval" json:"interval_ms,omitempty"`
+	Timeout  Duration `yaml:"timeout" json:"timeout_ms,omitempty"`
+	Retries  *int     `yaml:"retries" json:"retries,omitempty"` // http and tcp; nil inherits
 
 	// http
-	URL                string            `yaml:"url"`
-	Method             string            `yaml:"method"`
-	ExpectStatus       IntList           `yaml:"expect_status"`
-	FollowRedirects    bool              `yaml:"follow_redirects"`
-	Headers            map[string]string `yaml:"headers"`
-	UserAgent          string            `yaml:"user_agent"`
-	InsecureSkipVerify bool              `yaml:"insecure_skip_verify"`
-	MaxBody            int64             `yaml:"max_body"`
-	UseEnvProxy        bool              `yaml:"use_env_proxy"`
-	PinIP              *bool             `yaml:"pin_ip"`
+	URL                string            `yaml:"url" json:"url,omitempty"`
+	Method             string            `yaml:"method" json:"method,omitempty"`
+	ExpectStatus       IntList           `yaml:"expect_status" json:"expect_status,omitempty"`
+	FollowRedirects    bool              `yaml:"follow_redirects" json:"follow_redirects,omitempty"`
+	Headers            map[string]string `yaml:"headers" json:"headers,omitempty"`
+	UserAgent          string            `yaml:"user_agent" json:"user_agent,omitempty"`
+	InsecureSkipVerify bool              `yaml:"insecure_skip_verify" json:"insecure_skip_verify,omitempty"`
+	MaxBody            int64             `yaml:"max_body" json:"max_body,omitempty"`
+	UseEnvProxy        bool              `yaml:"use_env_proxy" json:"use_env_proxy,omitempty"`
+	PinIP              *bool             `yaml:"pin_ip" json:"pin_ip,omitempty"`
 
 	// tcp
-	Port int `yaml:"port"`
+	Port int `yaml:"port" json:"port,omitempty"`
 }
 
 // DNSProbeConfig queries a resolver directly, independent of any target.
 type DNSProbeConfig struct {
-	Name     string   `yaml:"name"`
-	Server   string   `yaml:"server"`
-	Query    string   `yaml:"query"`
-	Record   string   `yaml:"record"`
-	Interval Duration `yaml:"interval"`
-	Timeout  Duration `yaml:"timeout"`
+	Name     string   `yaml:"name" json:"name"`
+	Server   string   `yaml:"server" json:"server"`
+	Query    string   `yaml:"query" json:"query"`
+	Record   string   `yaml:"record" json:"record,omitempty"`
+	Interval Duration `yaml:"interval" json:"interval_ms,omitempty"`
+	Timeout  Duration `yaml:"timeout" json:"timeout_ms,omitempty"`
+	Retries  *int     `yaml:"retries" json:"retries,omitempty"`
 }
 
 // LoadOptions controls Load.
@@ -262,7 +287,17 @@ func (c *Config) applyDefaults() {
 	if df.MaxHops == 0 {
 		df.MaxHops = 30
 	}
+	c.Status.applyDefaults()
 	c.Alerts.applyDefaults()
+}
+
+func (s *StatusConfig) applyDefaults() {
+	if s.DegradedLossPct == 0 {
+		s.DegradedLossPct = 5
+	}
+	if s.DegradedHTTPSuccessPct == 0 {
+		s.DegradedHTTPSuccessPct = 95
+	}
 }
 
 func (c *Config) applyEnv(getenv func(string) string) {

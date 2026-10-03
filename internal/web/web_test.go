@@ -22,6 +22,7 @@ import (
 	"github.com/i-press-buttons/pathwatch/internal/config"
 	"github.com/i-press-buttons/pathwatch/internal/probe"
 	"github.com/i-press-buttons/pathwatch/internal/scheduler"
+	"github.com/i-press-buttons/pathwatch/internal/settings"
 	"github.com/i-press-buttons/pathwatch/internal/store"
 )
 
@@ -44,10 +45,25 @@ func (f *fakeProber) Probe(ctx context.Context, req probe.Request) probe.Result 
 	return probe.Result{Status: probe.StatusReply, Addr: netip.MustParseAddr(path[n-1]), RTT: time.Duration(n) * time.Millisecond}
 }
 
+type staticResolver map[string][]string
+
+func (r staticResolver) LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error) {
+	v, ok := r[host]
+	if !ok {
+		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+	}
+	var out []netip.Addr
+	for _, a := range v {
+		out = append(out, netip.MustParseAddr(a))
+	}
+	return out, nil
+}
+
 type fixture struct {
 	t      *testing.T
 	st     *store.Store
 	sched  *scheduler.Scheduler
+	mgr    *settings.Manager
 	an     *analyze.Analyzer
 	srv    *Server
 	ts     *httptest.Server
@@ -102,7 +118,13 @@ func newFixture(t *testing.T, o fixtureOpts) *fixture {
 		"index.html": {Data: []byte("<!doctype html><title>ui</title>app shell")},
 		"app.js":     {Data: []byte("console.log(1)")},
 	}
-	f.srv = New(Deps{Store: st, Sched: sched, Analyzer: an, Hub: hub, Config: cfg, Auth: auth, Version: "9.9.9", Logger: log, Static: static})
+	mgr, err := settings.New(st, sched, cfg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.mgr = mgr
+	f.srv = New(Deps{Store: st, Sched: sched, Analyzer: an, Hub: hub, Config: cfg, Settings: mgr, Auth: auth, Version: "9.9.9", Logger: log, Static: static,
+		Resolver: staticResolver{"pathwatch.test": {"192.0.2.10", "2001:db8::10"}}})
 	f.ts = httptest.NewServer(f.srv.Handler())
 	t.Cleanup(func() {
 		f.ts.Close()

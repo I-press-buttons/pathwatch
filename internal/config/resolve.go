@@ -59,6 +59,7 @@ type Probe struct {
 	MaxBody            int64             `json:"max_body,omitempty"`
 	UseEnvProxy        bool              `json:"use_env_proxy,omitempty"`
 	PinIP              bool              `json:"pin_ip"`
+	Retries            int               `json:"retries,omitempty"`
 
 	Port int `json:"port,omitempty"`
 }
@@ -95,6 +96,7 @@ type DNSProbe struct {
 	Record   string // A | AAAA
 	Interval time.Duration
 	Timeout  time.Duration
+	Retries  int
 }
 
 // Key is the stable identity of the DNS probe.
@@ -115,19 +117,111 @@ func ValidName(s string) bool { return nameRe.MatchString(s) }
 
 // ValidHost reports whether s is an IP literal or a plausible hostname.
 func ValidHost(s string) bool {
-	if s == "" || len(s) > 253 {
-		return false
+	_, err := NormalizeHost(s)
+	return err == nil
+}
+
+// Host kinds reported by HostKind.
+const (
+	HostIPv4     = "ipv4"
+	HostIPv6     = "ipv6"
+	HostHostname = "hostname"
+)
+
+// HostKind classifies a valid host: an IPv4 address, an IPv6 address or a hostname (an FQDN
+// such as "example.com." or "nas.example.com", or a short name the system resolver completes).
+func HostKind(s string) string {
+	if a, err := netip.ParseAddr(strings.Trim(s, "[]")); err == nil {
+		if a.Unmap().Is4() {
+			return HostIPv4
+		}
+		return HostIPv6
 	}
-	if _, err := netip.ParseAddr(s); err == nil {
-		return true
+	return HostHostname
+}
+
+// NormalizeHost validates a target host and returns its canonical form. Accepted: IPv4
+// addresses, IPv6 addresses (optionally in brackets, with a zone), and hostnames: fully
+// qualified (a trailing dot is kept, it stops the resolver's search list) or short. Hostnames
+// are lower-cased. Common mistakes (a URL, a port) get an error that says what to change.
+func NormalizeHost(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", fmt.Errorf("host is required (a hostname such as example.com, or an IP address)")
 	}
-	s = strings.TrimSuffix(s, ".")
-	for _, l := range strings.Split(s, ".") {
+	if i := strings.Index(s, "://"); i >= 0 {
+		return "", fmt.Errorf("invalid host %q: enter only the host name or IP address, without %q (the URL belongs in an HTTP probe)", s, s[:i+3])
+	}
+	if strings.ContainsAny(s, "/?#@ \t") {
+		return "", fmt.Errorf("invalid host %q: enter only a host name or IP address, without a path or spaces", s)
+	}
+	inner := s
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		inner = s[1 : len(s)-1]
+	}
+	if a, err := netip.ParseAddr(inner); err == nil {
+		if a.Is4In6() {
+			a = a.Unmap()
+		}
+		return a.String(), nil
+	}
+	if strings.HasPrefix(s, "[") {
+		return "", fmt.Errorf("invalid IPv6 address %q", s)
+	}
+	if h, p, err := net.SplitHostPort(s); err == nil && p != "" {
+		return "", fmt.Errorf("invalid host %q: remove the port (:%s); use %q and set the port on a TCP probe", s, p, h)
+	}
+	if strings.Count(s, ":") > 1 {
+		return "", fmt.Errorf("invalid IPv6 address %q", s)
+	}
+	if len(s) > 254 || (len(s) == 254 && !strings.HasSuffix(s, ".")) {
+		return "", fmt.Errorf("invalid host %q: longer than 253 characters", s)
+	}
+	name := strings.TrimSuffix(s, ".")
+	if name == "" {
+		return "", fmt.Errorf("invalid host %q", s)
+	}
+	labels := strings.Split(name, ".")
+	for _, l := range labels {
+		if l == "" {
+			return "", fmt.Errorf("invalid host %q: empty label (two dots in a row?)", s)
+		}
 		if !hostLabel.MatchString(l) {
+			return "", fmt.Errorf("invalid host %q: label %q may only contain letters, digits, '-' and '_' (max 63 characters, no leading or trailing '-')", s, l)
+		}
+	}
+	// A top-level domain is never all digits, so "10.0.0" or "300.1.1.1" is a mistyped
+	// IPv4 address, not a hostname.
+	if isDigits(labels[len(labels)-1]) {
+		return "", fmt.Errorf("invalid IPv4 address %q", s)
+	}
+	return strings.ToLower(s), nil
+}
+
+func isDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
 			return false
 		}
 	}
-	return true
+	return s != ""
+}
+
+// pickRetries returns the first set value of vals, or def.
+func pickRetries(def int, vals ...*int) int {
+	for _, v := range vals {
+		if v != nil {
+			return *v
+		}
+	}
+	return def
+}
+
+func checkRetries(n int) error {
+	if n < 0 || n > MaxRetries {
+		return fmt.Errorf("retries must be between 0 and %d", MaxRetries)
+	}
+	return nil
 }
 
 func pick(vals ...Duration) time.Duration {
@@ -148,11 +242,16 @@ func ResolveTarget(tc TargetConfig, d Defaults) (Target, error) {
 	if !ValidName(tc.Name) {
 		add("invalid name %q (letters, digits, space, '.', '_' and '-', max 63 chars)", tc.Name)
 	}
-	if !ValidHost(tc.Host) {
-		add("invalid host %q (a hostname or IP address, no scheme or port)", tc.Host)
+	if h, err := NormalizeHost(tc.Host); err != nil {
+		add("%v", err)
+	} else {
+		t.Host = h
 	}
 	if tc.MaxHops < 0 || tc.MaxHops > 64 {
 		add("max_hops must be between 1 and 64")
+	}
+	if tc.Retries != nil && (*tc.Retries < 0 || *tc.Retries > MaxRetries) {
+		add("retries must be between 0 and %d", MaxRetries)
 	}
 	probes := tc.Probes
 	if len(probes) == 0 {
@@ -237,6 +336,10 @@ func resolveHTTP(pc ProbeConfig, tc TargetConfig, d Defaults) (Probe, error) {
 		MaxBody:            pc.MaxBody,
 		UseEnvProxy:        pc.UseEnvProxy,
 		PinIP:              pc.PinIP == nil || *pc.PinIP,
+		Retries:            pickRetries(d.Retries, pc.Retries, tc.Retries),
+	}
+	if err := checkRetries(p.Retries); err != nil {
+		return p, err
 	}
 	if p.Method == "" {
 		p.Method = "GET"
@@ -275,6 +378,10 @@ func resolveTCP(pc ProbeConfig, tc TargetConfig, d Defaults) (Probe, error) {
 		Timeout:  pick(pc.Timeout, d.TCPTimeout),
 		Port:     pc.Port,
 		PinIP:    true,
+		Retries:  pickRetries(d.Retries, pc.Retries, tc.Retries),
+	}
+	if err := checkRetries(p.Retries); err != nil {
+		return p, err
 	}
 	if p.Port == 0 {
 		p.Port = 443
@@ -300,9 +407,13 @@ func ResolveDNSProbe(dc DNSProbeConfig, d Defaults) (DNSProbe, error) {
 		Record:   strings.ToUpper(dc.Record),
 		Interval: pick(dc.Interval, d.DNSInterval),
 		Timeout:  pick(dc.Timeout, d.DNSTimeout),
+		Retries:  pickRetries(d.Retries, dc.Retries),
 	}
 	if !ValidName(p.Name) {
 		return p, fmt.Errorf("dns probe: invalid name %q", dc.Name)
+	}
+	if err := checkRetries(p.Retries); err != nil {
+		return p, fmt.Errorf("dns probe %q: %v", p.Name, err)
 	}
 	if p.Record == "" {
 		p.Record = "A"
@@ -343,17 +454,14 @@ type UITargetRequest struct {
 	TCPPort        int
 }
 
-// NewUITarget builds and validates a target created from the UI.
-func NewUITarget(r UITargetRequest, d Defaults) (Target, error) {
+// Config converts the simple create request into a target definition.
+func (r UITargetRequest) Config() (TargetConfig, error) {
 	tc := TargetConfig{Name: strings.TrimSpace(r.Name), Host: strings.TrimSpace(r.Host)}
 	if r.ICMPIntervalMS < 0 {
-		return Target{}, fmt.Errorf("icmp_interval_ms must be positive")
+		return tc, fmt.Errorf("icmp_interval_ms must be positive")
 	}
 	if r.ICMPIntervalMS > 0 {
 		tc.ICMPInterval = Duration(time.Duration(r.ICMPIntervalMS) * time.Millisecond)
-		if tc.ICMPInterval.D() > time.Hour {
-			return Target{}, fmt.Errorf("icmp_interval_ms too large")
-		}
 	}
 	tc.Probes = []ProbeConfig{{Type: ProbeICMPTrace}}
 	if r.HTTPURL != "" {
@@ -362,12 +470,41 @@ func NewUITarget(r UITargetRequest, d Defaults) (Target, error) {
 	if r.TCPPort != 0 {
 		tc.Probes = append(tc.Probes, ProbeConfig{Type: ProbeTCP, Port: r.TCPPort})
 	}
+	return tc, nil
+}
+
+// maxUIInterval bounds probe intervals and timeouts entered in the UI.
+const maxUIInterval = 24 * time.Hour
+
+// ResolveUITarget validates a target definition edited in the UI and resolves it. On top of
+// ResolveTarget it bounds durations (a typo of a few zeros should not stop a probe for years).
+func ResolveUITarget(tc TargetConfig, d Defaults) (Target, error) {
+	tc.Name = strings.TrimSpace(tc.Name)
+	tc.Host = strings.TrimSpace(tc.Host)
+	tooLarge := func(v Duration) bool { return v.D() > maxUIInterval }
+	if tooLarge(tc.ICMPInterval) || tooLarge(tc.ICMPTimeout) || tooLarge(tc.TCPInterval) || tooLarge(tc.HTTPInterval) || tooLarge(tc.PathRediscovery) {
+		return Target{}, fmt.Errorf("target %q: intervals and timeouts must be at most 24h", tc.Name)
+	}
+	for _, p := range tc.Probes {
+		if tooLarge(p.Interval) || tooLarge(p.Timeout) {
+			return Target{}, fmt.Errorf("target %q: intervals and timeouts must be at most 24h", tc.Name)
+		}
+	}
 	t, err := ResolveTarget(tc, d)
 	if err != nil {
 		return t, err
 	}
 	t.Source = SourceUI
 	return t, nil
+}
+
+// NewUITarget builds and validates a target created from the UI.
+func NewUITarget(r UITargetRequest, d Defaults) (Target, error) {
+	tc, err := r.Config()
+	if err != nil {
+		return Target{}, err
+	}
+	return ResolveUITarget(tc, d)
 }
 
 // ResolveTargets returns the resolved config targets. The config must have been validated.

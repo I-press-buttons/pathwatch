@@ -20,6 +20,7 @@ import (
 	"github.com/i-press-buttons/pathwatch/internal/enrich"
 	"github.com/i-press-buttons/pathwatch/internal/probe"
 	"github.com/i-press-buttons/pathwatch/internal/scheduler"
+	"github.com/i-press-buttons/pathwatch/internal/settings"
 	"github.com/i-press-buttons/pathwatch/internal/store"
 	"github.com/i-press-buttons/pathwatch/internal/web"
 	webui "github.com/i-press-buttons/pathwatch/web"
@@ -152,8 +153,13 @@ func run(cfg *config.Config, log *slog.Logger) error {
 		Store: st, Prober: sp, Observer: fanout{hub: hub, an: &anPtr}, Logger: log,
 		Defaults: cfg.Defaults, Version: version,
 	})
+	// Settings edited in the web UI (stored in the database) are layered over the file.
+	mgr, err := settings.New(st, sched, cfg, log)
+	if err != nil {
+		return fmt.Errorf("load settings: %w", err)
+	}
 	engine := alert.NewRuleEngine(alert.RuleEngineOptions{
-		Store: st, Sink: hub, Config: cfg, Log: log,
+		Store: st, Sink: hub, Config: mgr.Effective(), Log: log,
 		// the heartbeat shares /healthz's health signal
 		Healthy: func() bool {
 			if !st.WriterAlive() {
@@ -169,12 +175,10 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	anPtr.Store(an)
 	an.Start()
 
+	mgr.SetEngine(engine)
 	sched.Start(ctx)
-	if err := sched.SyncConfig(cfg.ResolveTargets(), cfg.ResolveDNSProbes()); err != nil {
+	if err := mgr.Start(); err != nil {
 		return fmt.Errorf("start targets: %w", err)
-	}
-	if err := sched.LoadUITargets(); err != nil {
-		log.Warn("loading UI targets failed", "err", err)
 	}
 	log.Info("monitoring started", "targets", len(sched.States()))
 
@@ -183,7 +187,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 		static = sub
 	}
 	srv := web.New(web.Deps{
-		Store: st, Sched: sched, Analyzer: an, Enrich: en, Hub: hub, Config: cfg, Auth: auth,
+		Store: st, Sched: sched, Analyzer: an, Enrich: en, Hub: hub, Config: cfg, Settings: mgr, Auth: auth,
 		Version: version, Logger: log, Static: static,
 	})
 	ln, err := net.Listen("tcp", cfg.Listen)
@@ -196,7 +200,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	}
 	log.Info("web UI listening", "url", scheme+"://"+ln.Addr().String()+"/")
 
-	go watchReload(ctx, cfg.Path, sched, engine, log)
+	go watchReload(ctx, cfg.Path, mgr, log)
 
 	err = srv.ListenAndServe(ctx, ln)
 	log.Info("shutting down")
@@ -210,8 +214,8 @@ func run(cfg *config.Config, log *slog.Logger) error {
 }
 
 // watchReload re-reads the config on SIGHUP and applies targets, DNS probes and the alert
-// rules, channels and heartbeat.
-func watchReload(ctx context.Context, path string, sched *scheduler.Scheduler, engine *alert.RuleEngine, log *slog.Logger) {
+// rules, channels and heartbeat (with the settings edited in the UI layered on top).
+func watchReload(ctx context.Context, path string, mgr *settings.Manager, log *slog.Logger) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGHUP)
 	defer signal.Stop(ch)
@@ -226,11 +230,10 @@ func watchReload(ctx context.Context, path string, sched *scheduler.Scheduler, e
 			log.Error("config reload failed; keeping the running configuration", "err", err)
 			continue
 		}
-		if err := sched.SyncConfig(cfg.ResolveTargets(), cfg.ResolveDNSProbes()); err != nil {
+		if err := mgr.ReloadFile(cfg); err != nil {
 			log.Error("applying reloaded config failed", "err", err)
 			continue
 		}
-		engine.Reload(cfg)
 		log.Info("config reloaded", "targets", len(cfg.Targets), "dns_probes", len(cfg.DNSProbes))
 	}
 }

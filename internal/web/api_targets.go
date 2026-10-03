@@ -4,12 +4,14 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/i-press-buttons/pathwatch/internal/alert"
 	"github.com/i-press-buttons/pathwatch/internal/analyze"
 	"github.com/i-press-buttons/pathwatch/internal/config"
 	"github.com/i-press-buttons/pathwatch/internal/scheduler"
+	"github.com/i-press-buttons/pathwatch/internal/settings"
 	"github.com/i-press-buttons/pathwatch/internal/store"
 )
 
@@ -50,14 +52,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		mode = s.d.Sched.ICMPMode()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":          s.d.Version,
-		"now":              now.UnixMilli(),
-		"uptime_s":         int64(now.Sub(s.started).Seconds()),
-		"icmp_mode":        mode,
-		"local_status":     local,
-		"active_alerts":    total,
-		"auth_enabled":     s.d.Auth.Enabled,
-		"read_only_config": false,
+		"version":           s.d.Version,
+		"now":               now.UnixMilli(),
+		"uptime_s":          int64(now.Sub(s.started).Seconds()),
+		"icmp_mode":         mode,
+		"local_status":      local,
+		"active_alerts":     total,
+		"auth_enabled":      s.d.Auth.Enabled,
+		"read_only_config":  s.d.Settings == nil,
+		"status_thresholds": s.cfg().Status,
 	})
 }
 
@@ -87,7 +90,9 @@ type targetJSON struct {
 	ID               int64       `json:"id"`
 	Name             string      `json:"name"`
 	Host             string      `json:"host"`
+	HostKind         string      `json:"host_kind"` // ipv4 | ipv6 | hostname
 	Source           string      `json:"source"`
+	Overridden       bool        `json:"overridden"` // a config-file target edited in the UI
 	Active           bool        `json:"active"`
 	Paused           bool        `json:"paused"`
 	Removed          bool        `json:"removed"`
@@ -168,8 +173,9 @@ func (s *Server) handleTargets(w http.ResponseWriter, r *http.Request) {
 func (s *Server) buildTarget(v targetView, counts map[int64]int) (targetJSON, error) {
 	now := s.now()
 	tj := targetJSON{
-		ID: v.row.ID, Name: v.row.Name, Host: v.row.Host, Source: v.row.Source,
-		Active: v.running(), Paused: v.row.Paused, Removed: !v.row.Active,
+		ID: v.row.ID, Name: v.row.Name, Host: v.row.Host, HostKind: config.HostKind(v.row.Host), Source: v.row.Source,
+		Overridden: v.row.Source == config.SourceConfig && v.row.Spec != "",
+		Active:     v.running(), Paused: v.row.Paused, Removed: !v.row.Active,
 		ICMPUnresponsive: v.hasSt && v.state.ICMPUnresponsive,
 		Probes:           make([]probeJSON, 0, len(v.probes)),
 	}
@@ -328,10 +334,11 @@ func (s *Server) statusOf(v targetView, now, lastRound time.Time, sum summaryJSO
 			degraded = true
 		}
 	}
-	if e2eLoss != nil && *e2eLoss > 5 {
+	th := s.cfg().Status
+	if e2eLoss != nil && *e2eLoss > th.DegradedLossPct {
 		degraded = true
 	}
-	if httpOK && sum.HTTPSuccess != nil && *sum.HTTPSuccess < 95 {
+	if httpOK && sum.HTTPSuccess != nil && *sum.HTTPSuccess < th.DegradedHTTPSuccessPct {
 		degraded = true
 	}
 	if degraded {
@@ -367,51 +374,145 @@ func (s *Server) silenced(now time.Time, targetID int64) bool {
 // ---------------------------------------------------------------------------
 // create / delete / pause
 
+// createTargetReq is a full target definition, or (without "probes") the simple form of
+// earlier versions: name, host, icmp_interval_ms, http_url and tcp_port.
 type createTargetReq struct {
-	Name           string `json:"name"`
-	Host           string `json:"host"`
-	ICMPIntervalMS int    `json:"icmp_interval_ms"`
-	HTTPURL        string `json:"http_url"`
-	TCPPort        int    `json:"tcp_port"`
+	config.TargetConfig
+	HTTPURL string `json:"http_url"`
+	TCPPort int    `json:"tcp_port"`
 }
 
 func (s *Server) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
 	if !requireJSON(w, r) {
 		return
 	}
+	if s.d.Settings == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings are not available")
+		return
+	}
 	var req createTargetReq
-	if !decodeBody(w, r, &req) {
+	if !decodeStrict(w, r, &req) {
 		return
 	}
-	d := config.Defaults{}
-	if s.d.Config != nil {
-		d = s.d.Config.Defaults
-	}
-	t, err := config.NewUITarget(config.UITargetRequest{Name: req.Name, Host: req.Host, ICMPIntervalMS: req.ICMPIntervalMS, HTTPURL: req.HTTPURL, TCPPort: req.TCPPort}, d)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if s.d.Sched == nil {
-		writeError(w, http.StatusServiceUnavailable, "scheduler not running")
-		return
-	}
-	row, err := s.d.Sched.AddUITarget(t)
-	if err != nil {
-		if errors.Is(err, store.ErrDuplicate) {
-			writeError(w, http.StatusConflict, "a target named "+strconv.Quote(t.Name)+" already exists")
+	tc := req.TargetConfig
+	if tc.Probes == nil {
+		simple, err := config.UITargetRequest{Name: tc.Name, Host: tc.Host, HTTPURL: req.HTTPURL, TCPPort: req.TCPPort}.Config()
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		s.internal(w, r, err)
+		tc.Probes = simple.Probes
+	} else if req.HTTPURL != "" || req.TCPPort != 0 {
+		writeError(w, http.StatusBadRequest, "use either probes or http_url/tcp_port, not both")
 		return
 	}
+	row, err := s.d.Settings.CreateTarget(tc)
+	if err != nil {
+		s.settingsError(w, r, err, tc.Name)
+		return
+	}
+	s.writeTarget(w, r, row, http.StatusCreated)
+}
+
+func (s *Server) writeTarget(w http.ResponseWriter, r *http.Request, row store.TargetRow, code int) {
 	counts, _, _ := s.d.Store.ActiveAlertCounts()
 	tj, err := s.buildTarget(s.viewOf(row), counts)
 	if err != nil {
 		s.internal(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, tj)
+	writeJSON(w, code, tj)
+}
+
+// settingsError maps settings manager errors to responses.
+func (s *Server) settingsError(w http.ResponseWriter, r *http.Request, err error, name string) {
+	var inv settings.InvalidError
+	switch {
+	case errors.As(err, &inv):
+		writeError(w, http.StatusBadRequest, inv.Error())
+	case errors.Is(err, store.ErrDuplicate):
+		writeError(w, http.StatusConflict, "a target named "+strconv.Quote(strings.TrimSpace(name))+" already exists")
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "target not found")
+	case errors.Is(err, settings.ErrRemoved):
+		writeError(w, http.StatusConflict, "target was removed from the config file")
+	case errors.Is(err, settings.ErrRenameCf):
+		writeError(w, http.StatusBadRequest, "this target is defined in the config file; rename it there")
+	case errors.Is(err, settings.ErrNotInUI):
+		writeError(w, http.StatusConflict, "this target has no settings edited in the UI")
+	case errors.Is(err, scheduler.ErrConfigTarget):
+		writeError(w, http.StatusForbidden, "this target is defined in the config file; remove it there")
+	default:
+		s.internal(w, r, err)
+	}
+}
+
+func (s *Server) handleUpdateTarget(w http.ResponseWriter, r *http.Request) {
+	if !requireJSON(w, r) {
+		return
+	}
+	row, ok := s.targetFromPath(w, r)
+	if !ok {
+		return
+	}
+	if s.d.Settings == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings are not available")
+		return
+	}
+	var tc config.TargetConfig
+	if !decodeStrict(w, r, &tc) {
+		return
+	}
+	nrow, err := s.d.Settings.UpdateTarget(row.ID, tc)
+	if err != nil {
+		s.settingsError(w, r, err, tc.Name)
+		return
+	}
+	s.writeTarget(w, r, nrow, http.StatusOK)
+}
+
+// targetConfigJSON is a target's editable definition.
+type targetConfigJSON struct {
+	ID         int64               `json:"id"`
+	Source     string              `json:"source"`
+	Overridden bool                `json:"overridden"`
+	Target     config.TargetConfig `json:"target"`
+}
+
+func (s *Server) handleTargetConfig(w http.ResponseWriter, r *http.Request) {
+	row, ok := s.targetFromPath(w, r)
+	if !ok {
+		return
+	}
+	if s.d.Settings == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings are not available")
+		return
+	}
+	def, err := s.d.Settings.Target(row)
+	if err != nil {
+		s.settingsError(w, r, err, row.Name)
+		return
+	}
+	if def.Target.Probes == nil {
+		def.Target.Probes = []config.ProbeConfig{}
+	}
+	writeJSON(w, http.StatusOK, targetConfigJSON{ID: row.ID, Source: row.Source, Overridden: def.Overridden, Target: def.Target})
+}
+
+func (s *Server) handleRevertTarget(w http.ResponseWriter, r *http.Request) {
+	row, ok := s.targetFromPath(w, r)
+	if !ok {
+		return
+	}
+	if s.d.Settings == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings are not available")
+		return
+	}
+	if err := s.d.Settings.RevertTarget(row.ID); err != nil {
+		s.settingsError(w, r, err, row.Name)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
@@ -423,16 +524,12 @@ func (s *Server) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "this target is defined in the config file; remove it there")
 		return
 	}
-	if s.d.Sched == nil {
-		writeError(w, http.StatusServiceUnavailable, "scheduler not running")
+	if s.d.Settings == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings are not available")
 		return
 	}
-	if err := s.d.Sched.RemoveTarget(row.ID); err != nil {
-		if errors.Is(err, scheduler.ErrConfigTarget) {
-			writeError(w, http.StatusForbidden, "this target is defined in the config file; remove it there")
-			return
-		}
-		s.internal(w, r, err)
+	if err := s.d.Settings.DeleteTarget(row.ID); err != nil {
+		s.settingsError(w, r, err, row.Name)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

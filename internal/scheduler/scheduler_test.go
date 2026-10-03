@@ -2,11 +2,14 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/netip"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -293,11 +296,15 @@ func (f *fakeProber) Probe(ctx context.Context, req probe.Request) probe.Result 
 
 type recObserver struct {
 	rounds, probes, changed atomic.Int64
+	lastProbe               atomic.Pointer[ProbeEvent]
 }
 
 func (o *recObserver) Round(RoundEvent) { o.rounds.Add(1) }
-func (o *recObserver) Probe(ProbeEvent) { o.probes.Add(1) }
-func (o *recObserver) TargetsChanged()  { o.changed.Add(1) }
+func (o *recObserver) Probe(e ProbeEvent) {
+	o.lastProbe.Store(&e)
+	o.probes.Add(1)
+}
+func (o *recObserver) TargetsChanged() { o.changed.Add(1) }
 
 type staticResolver map[string]string
 
@@ -448,14 +455,14 @@ func TestSchedulerPauseResumeAndUITargets(t *testing.T) {
 	fp := &fakeProber{path: []string{"10.0.0.1", "192.0.2.7"}}
 	s, st, obs := newTestScheduler(t, fp, staticResolver{"host.example": "192.0.2.7"})
 	tg := icmpTarget("ui-one", "host.example", 30*time.Millisecond)
-	row, err := s.AddUITarget(tg)
+	row, err := s.AddUITarget(tg, specJSON(t, tg))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if row.Source != config.SourceUI || obs.changed.Load() == 0 {
 		t.Fatalf("row %+v changed=%d", row, obs.changed.Load())
 	}
-	if _, err := s.AddUITarget(tg); !errors.Is(err, store.ErrDuplicate) {
+	if _, err := s.AddUITarget(tg, "{}"); !errors.Is(err, store.ErrDuplicate) {
 		t.Errorf("duplicate: %v", err)
 	}
 	waitUntil(t, "rounds on ui target", func() bool { return obs.rounds.Load() >= 3 })
@@ -520,7 +527,8 @@ func TestSchedulerLoadsUITargetsOnRestart(t *testing.T) {
 		return s, st
 	}
 	s, st := open()
-	row, err := s.AddUITarget(icmpTarget("persist", "192.0.2.7", 40*time.Millisecond))
+	tg := icmpTarget("persist", "192.0.2.7", 40*time.Millisecond)
+	row, err := s.AddUITarget(tg, specJSON(t, tg))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +539,11 @@ func TestSchedulerLoadsUITargetsOnRestart(t *testing.T) {
 	s2, st2 := open()
 	defer st2.Close()
 	defer s2.Close()
-	if err := s2.LoadUITargets(); err != nil {
+	if err := s2.LoadUITargets(func(r store.TargetRow) (config.Target, error) {
+		var tg config.Target
+		err := json.Unmarshal([]byte(r.Spec), &tg)
+		return tg, err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	ps, ok := s2.State(row.ID)
@@ -597,5 +609,97 @@ func TestPickAddr(t *testing.T) {
 	}
 	if got := pickAddr([]netip.Addr{b4}, a4); got != b4 {
 		t.Errorf("pin gone: %v", got)
+	}
+}
+
+func specJSON(t *testing.T, tg config.Target) string {
+	t.Helper()
+	b, err := json.Marshal(tg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestApplyTargetRestartsOnlyOnChange(t *testing.T) {
+	fp := &fakeProber{path: []string{"10.0.0.1", "192.0.2.7"}}
+	s, _, obs := newTestScheduler(t, fp, staticResolver{"host.example": "192.0.2.7", "other.example": "192.0.2.8"})
+	tg := icmpTarget("edit-me", "host.example", 30*time.Millisecond)
+	row, err := s.AddUITarget(tg, "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "rounds", func() bool { return obs.rounds.Load() >= 2 })
+	e := s.entries[row.ID]
+	run1 := e.run
+	if err := s.ApplyTarget(row, tg); err != nil {
+		t.Fatal(err)
+	}
+	if s.entries[row.ID].run != run1 {
+		t.Error("unchanged definition restarted the runner")
+	}
+	ic := *tg.ICMP
+	ic.Interval = 40 * time.Millisecond
+	tg.ICMP = &ic
+	if err := s.ApplyTarget(row, tg); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := s.State(row.ID)
+	if s.entries[row.ID].run == run1 || st.Spec.ICMP.Interval != 40*time.Millisecond {
+		t.Errorf("new interval not applied: %+v", st.Spec.ICMP)
+	}
+	row.Host = "other.example"
+	if err := s.ApplyTarget(row, tg); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "new host resolved", func() bool { st, _ := s.State(row.ID); return st.ResolvedIP == "192.0.2.8" })
+}
+
+func TestRetrying(t *testing.T) {
+	ctx := context.Background()
+	calls := 0
+	fail := func() bool { calls++; return false }
+	if n := retrying(ctx, 2, time.Millisecond, time.Hour, time.Now(), fail); n != 3 || calls != 3 {
+		t.Errorf("2 retries: %d attempts, %d calls", n, calls)
+	}
+	calls = 0
+	okSecond := func() bool { calls++; return calls == 2 }
+	if n := retrying(ctx, 5, time.Millisecond, time.Hour, time.Now(), okSecond); n != 2 {
+		t.Errorf("stops at success: %d", n)
+	}
+	calls = 0
+	if n := retrying(ctx, 0, time.Millisecond, time.Hour, time.Now(), fail); n != 1 {
+		t.Errorf("no retries: %d", n)
+	}
+	// no time left before the next probe is due: no retry
+	calls = 0
+	if n := retrying(ctx, 3, time.Second, time.Second, time.Now(), fail); n != 1 {
+		t.Errorf("budget: %d attempts", n)
+	}
+	if got := withAttempts("timeout", false, 3); got != "timeout (failed 3 attempts)" {
+		t.Error(got)
+	}
+	if got := withAttempts("timeout", false, 1); got != "timeout" {
+		t.Error(got)
+	}
+}
+
+func TestTCPRetriesAreRecorded(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close() // nothing listens: every attempt fails
+	s, _, obs := newTestScheduler(t, nil, nil)
+	tg := config.Target{Name: "retry", Host: "127.0.0.1", Source: config.SourceConfig,
+		Probes: []config.Probe{{Type: config.ProbeTCP, Port: port, Interval: 2 * time.Second, Timeout: 200 * time.Millisecond, Retries: 2, PinIP: true}}}
+	if err := s.SyncConfig([]config.Target{tg}, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "a tcp sample", func() bool { return obs.probes.Load() >= 1 })
+	e := obs.lastProbe.Load()
+	if e.OK || !strings.Contains(e.Sample.Error, "failed 3 attempts") {
+		t.Fatalf("sample %+v", e.Sample)
 	}
 }

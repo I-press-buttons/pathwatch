@@ -24,6 +24,7 @@ import (
 	"github.com/i-press-buttons/pathwatch/internal/config"
 	"github.com/i-press-buttons/pathwatch/internal/enrich"
 	"github.com/i-press-buttons/pathwatch/internal/scheduler"
+	"github.com/i-press-buttons/pathwatch/internal/settings"
 	"github.com/i-press-buttons/pathwatch/internal/store"
 )
 
@@ -32,9 +33,11 @@ type Deps struct {
 	Store    *store.Store
 	Sched    *scheduler.Scheduler
 	Analyzer *analyze.Analyzer
-	Enrich   *enrich.Enricher // optional
-	Hub      *Hub             // optional (a private hub is created when nil)
-	Config   *config.Config
+	Enrich   *enrich.Enricher  // optional
+	Hub      *Hub              // optional (a private hub is created when nil)
+	Config   *config.Config    // the configuration (used when Settings is nil)
+	Settings *settings.Manager // optional: UI-edited settings and the effective configuration
+	Resolver Resolver          // optional: for /api/resolve (default net.DefaultResolver)
 	Auth     config.Auth
 	Version  string
 	Logger   *slog.Logger
@@ -81,6 +84,22 @@ func New(d Deps) *Server {
 	return s
 }
 
+// cfg returns the effective configuration.
+func (s *Server) cfg() *config.Config {
+	if s.d.Settings != nil {
+		return s.d.Settings.Effective()
+	}
+	if s.d.Config != nil {
+		return s.d.Config
+	}
+	return defaultConfig
+}
+
+var defaultConfig = func() *config.Config {
+	c, _ := config.Parse(nil, func(string) string { return "" })
+	return c
+}()
+
 // Hub returns the SSE hub (use it as the scheduler Observer and alert AlertSink).
 func (s *Server) Hub() *Hub { return s.hub }
 
@@ -90,7 +109,14 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/status", s.handleStatus)
 	m.HandleFunc("GET /api/targets", s.handleTargets)
 	m.HandleFunc("POST /api/targets", s.handleCreateTarget)
+	m.HandleFunc("PUT /api/targets/{id}", s.handleUpdateTarget)
 	m.HandleFunc("DELETE /api/targets/{id}", s.handleDeleteTarget)
+	m.HandleFunc("GET /api/targets/{id}/config", s.handleTargetConfig)
+	m.HandleFunc("DELETE /api/targets/{id}/override", s.handleRevertTarget)
+	m.HandleFunc("GET /api/settings", s.handleSettings)
+	m.HandleFunc("PUT /api/settings/{section}", s.handlePutSetting)
+	m.HandleFunc("DELETE /api/settings/{section}", s.handleDeleteSetting)
+	m.HandleFunc("GET /api/resolve", s.handleResolve)
 	m.HandleFunc("POST /api/targets/{id}/pause", s.handlePause(true))
 	m.HandleFunc("POST /api/targets/{id}/resume", s.handlePause(false))
 	m.HandleFunc("GET /api/overview", s.handleOverview)
@@ -349,8 +375,20 @@ func requireJSON(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
+	return decode(w, r, v, false)
+}
+
+// decodeStrict is decodeBody that rejects unknown fields (catches typos in settings).
+func decodeStrict(w http.ResponseWriter, r *http.Request, v any) bool {
+	return decode(w, r, v, true)
+}
+
+func decode(w http.ResponseWriter, r *http.Request, v any, strict bool) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	dec := json.NewDecoder(r.Body)
+	if strict {
+		dec.DisallowUnknownFields()
+	}
 	if err := dec.Decode(v); err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {

@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -59,6 +60,48 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 
 // MarshalYAML implements yaml.Marshaler.
 func (d Duration) MarshalYAML() (any, error) { return time.Duration(d).String(), nil }
+
+// MarshalJSON encodes the duration as whole milliseconds (the API's unit for durations).
+func (d Duration) MarshalJSON() ([]byte, error) {
+	return []byte(strconv.FormatInt(time.Duration(d).Milliseconds(), 10)), nil
+}
+
+// UnmarshalJSON accepts milliseconds (a number) or a duration string such as "30s" or "7d".
+// null leaves the value unchanged.
+func (d *Duration) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(string(b))
+	if s == "null" {
+		return nil
+	}
+	if strings.HasPrefix(s, `"`) {
+		uq, err := strconv.Unquote(s)
+		if err != nil {
+			return fmt.Errorf("invalid duration %s", s)
+		}
+		if uq == "" || uq == "0" {
+			*d = 0
+			return nil
+		}
+		v, err := ParseDuration(uq)
+		if err != nil {
+			return err
+		}
+		*d = Duration(v)
+		return nil
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+		return fmt.Errorf("invalid duration %s (expected milliseconds)", s)
+	}
+	if f < 0 {
+		return fmt.Errorf("duration %s must not be negative", s)
+	}
+	if f > float64(math.MaxInt64/int64(time.Millisecond)) {
+		return fmt.Errorf("duration %s is too large", s)
+	}
+	*d = Duration(time.Duration(f * float64(time.Millisecond)))
+	return nil
+}
 
 // IntList accepts either a single integer or a list of integers in YAML.
 type IntList []int

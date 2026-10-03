@@ -24,7 +24,7 @@ Project name: `pathwatch`.
 - Multiple vantage points / distributed agents reporting to a central server.
 - A native desktop GUI.
 - Packet capture or deep packet inspection.
-- Editing config from the UI (the UI is read-only apart from silences, see [Silences](#silences-and-maintenance-windows)).
+- Editing secrets, notification channels, maintenance windows or server settings (listen, TLS, storage) from the UI. Targets, probe settings, alert thresholds and DNS probes are editable, see [Settings edited in the UI](#settings-edited-in-the-ui).
 - Data export / ISP report generation and a Prometheus `/metrics` endpoint (possible later, not planned).
 
 ## Key design decisions
@@ -377,6 +377,11 @@ defaults:                             # inherited by every target/probe; overrid
   dns_interval: 30s
   path_rediscovery: 5m
   max_hops: 30
+  retries: 0                          # retries of a failed HTTP/TCP/DNS probe (0-10); ICMP never retries
+
+status:                               # when a target shows as "degraded"
+  degraded_loss_pct: 5                # end-to-end loss above this over the last 5 minutes
+  degraded_http_success_pct: 95       # HTTP success below this over the last 5 minutes
 
 targets:
   - name: cloudflare
@@ -394,6 +399,7 @@ targets:
       - type: icmp-trace
       - type: tcp
         port: 443
+        retries: 2                    # per-probe override (also settable per target)
       - type: http
         url: https://github.com/
         expect_status: 200
@@ -523,6 +529,19 @@ These additions take precedence over earlier sections where they conflict.
 - **Themes.** Several built-in themes selectable in the UI and remembered per browser: Auto (follows `prefers-color-scheme`), Light, Dark, Midnight, Nord, Solarized Light, Solarized Dark, High Contrast, and Classic (PingPlotter-like green/yellow/red latency scale). Each theme defines its UI colors and its latency/loss color scale.
 - **Image:** `ghcr.io/i-press-buttons/pathwatch`, multi-arch (linux/amd64, linux/arm64). Tags: `latest` from the default branch, `edge` from any other branch push, and semver tags on releases. Runs as root inside the container (simplest reliable raw-socket access on Synology kernels), with `network_mode: host` and `cap_add: [NET_RAW]`.
 - **API contract:** see [API.md](API.md).
+
+### Settings edited in the UI
+
+Everything about what is monitored and when it alerts has a UI control:
+
+- **Targets** (Overview → Add target / Edit, or the target page): name, host, hop trace on/off with interval, timeout, max hops and rediscovery interval, any number of HTTP probes (URL, method, expected status, interval, timeout, retries, redirects, TLS verification) and TCP probes (port, interval, timeout, retries), and per-target alert settings (turn rules off, override their thresholds).
+- **Settings page:** probe defaults (every interval and timeout, max hops, rediscovery, retries), status thresholds (when a target turns "degraded"), alert rules (add, remove, enable, thresholds, channel routing, cooldown, clear ratio), and DNS probes.
+
+Storage and precedence: UI edits are stored in the database (`settings` table and `targets.spec`) and layered over the config file. An edited section (defaults, status, alerts, DNS probes) replaces the file's section; an edited config-file target is replaced by its edited definition (matched by name). Each can be reverted to the file in the UI. Changes apply immediately without a restart, and SIGHUP reloads keep the UI edits. If stored settings no longer fit a changed config file (for example a rule they refer to was removed), pathwatch logs it and falls back to the file's sections rather than failing to start.
+
+**Hosts.** A target host is a hostname (fully qualified, with or without a trailing dot, or a short name completed by the system resolver), an IPv4 address or an IPv6 address (brackets accepted). Hosts are normalized; URLs and `host:port` are rejected with a message that says what to change. The UI shows what kind of host was entered and can resolve it before saving. Hostnames are re-resolved every `path_rediscovery` and the IPv4 address is preferred. Hop tracing is IPv4-only (see Later); HTTP and TCP probes work over IPv6.
+
+**Retries.** `retries` (0–10, default 0) applies to HTTP, TCP and DNS probes: a failed attempt is retried after 250 ms, as long as another attempt can finish before the probe is next due, and only the final outcome is recorded (a failure notes the number of attempts). Retries trade sensitivity for fewer one-off failures; the consecutive-failure alert rules are the other knob. ICMP hop probes never retry: an unanswered probe is the loss being measured.
 
 ## Known pitfalls
 

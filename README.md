@@ -11,7 +11,7 @@ A self-hosted, always-on network path monitor in the spirit of [PingPlotter](htt
 - **MOS score** per target from latency, jitter and loss.
 - **Themes**: Auto, Light, Dark, Midnight, Nord, Solarized Light/Dark, High Contrast and a Classic green/yellow/red scale.
 - **Long-term history** in SQLite with automatic rollups and retention.
-- **Targets from the UI or a YAML file**: add, pause and remove targets in the browser, or keep them in version-controlled config.
+- **Everything configurable from the UI**: add, edit, pause and remove targets (hostname/FQDN, IPv4 or IPv6), with per-probe intervals, timeouts and retries; edit probe defaults, alert rules and thresholds (globally and per target), "degraded" thresholds and DNS probes on the Settings page. Changes apply immediately. Or keep it all in a version-controlled YAML file; UI edits are layered on top and can be reverted to the file.
 - **Pure Go, no CGO**: runs on Linux (amd64, arm64, armv7) and Windows, with no runtime to install.
 
 <!-- screenshots -->
@@ -63,7 +63,11 @@ Then open <http://localhost:8095> (or `http://<server-ip>:8095`) and log in as `
 
 Settings live in a single YAML file with strict decoding (unknown keys are errors). In Docker it is `/data/pathwatch.yaml`; when run natively, pass `--config`. See the [config example in docs/SPEC.md](docs/SPEC.md#config-example) for every option: targets and probes, defaults, alert rules, maintenance windows, webhook and email channels, retention and TLS. Secrets such as webhook URLs and SMTP passwords are read from environment variables, never from the file.
 
-Renaming a target starts a new history, because the target name is its identity in the database. Changing its `host` starts a new path version.
+Settings changed in the web UI (targets, probe defaults, alert rules and thresholds, status thresholds, DNS probes) are stored in the database and take precedence over the file. The UI marks them as "Edited in UI" and can revert each one to the file. Notification channels, maintenance windows, the heartbeat and server settings (listen, TLS, storage) are file-only.
+
+Target hosts can be a hostname (FQDN such as `example.com` or `example.com.`, or a short LAN name), an IPv4 address or an IPv6 address. Hostnames are re-resolved every `path_rediscovery`; hop tracing is IPv4-only for now, while HTTP and TCP probes also work over IPv6. `retries` (0–10) retries a failed HTTP, TCP or DNS probe before the failure is recorded; ICMP hop probes never retry, because an unanswered probe is the loss being measured.
+
+Renaming a config-file target starts a new history, because the target name is its identity in the database (UI targets can be renamed in the UI and keep their history). Changing its `host` starts a new path version.
 
 ### Environment variables
 

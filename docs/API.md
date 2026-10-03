@@ -22,7 +22,8 @@ Resolution tier is chosen by the server: raw rounds for ranges ≤ 6h, 1-minute 
   "local_status": "ok",               // ok | down | unknown
   "active_alerts": 1,
   "auth_enabled": true,
-  "read_only_config": false
+  "read_only_config": false,          // true when settings cannot be edited (no settings manager)
+  "status_thresholds": {"degraded_loss_pct": 5, "degraded_http_success_pct": 95}
 }
 ```
 
@@ -32,7 +33,9 @@ Resolution tier is chosen by the server: raw rounds for ranges ≤ 6h, 1-minute 
 ```json
 [{
   "id": 1, "name": "cloudflare", "host": "cloudflare.com",
+  "host_kind": "hostname",            // hostname | ipv4 | ipv6
   "source": "config",                 // config | ui  (ui targets can be deleted from the UI)
+  "overridden": false,                // a config-file target whose settings were edited in the UI
   "active": true,
   "status": "ok",                     // ok | degraded | alerting | silenced | nodata | learning
   "resolved_ip": "104.16.132.229",
@@ -55,16 +58,103 @@ Resolution tier is chosen by the server: raw rounds for ranges ≤ 6h, 1-minute 
 }]
 ```
 
-`POST /api/targets` (create a UI-managed target; 409 on duplicate name, 400 on validation error)
+### Target definitions
+
+A target definition is the JSON form of a `targets:` entry of the config file. Durations are
+milliseconds (`*_ms`); a missing or zero value inherits the defaults, a missing `retries`
+inherits `defaults.retries`.
+
+```json
+{
+  "name": "my-isp",
+  "host": "example.com",              // FQDN (trailing dot allowed), short name, IPv4 or IPv6 ("[...]" accepted)
+  "max_hops": 30, "path_rediscovery_ms": 300000,
+  "probes": [
+    {"type": "icmp-trace", "interval_ms": 2000, "timeout_ms": 2000},
+    {"type": "http", "url": "https://example.com/", "method": "GET", "expect_status": [200, 301],
+     "interval_ms": 30000, "timeout_ms": 10000, "retries": 1,
+     "follow_redirects": false, "insecure_skip_verify": false},
+    {"type": "tcp", "port": 443, "interval_ms": 10000, "timeout_ms": 5000, "retries": 2}
+  ],
+  "alerts": {                         // per-target alert settings (rule names)
+    "disable": ["route"],
+    "override": {"end-loss": {"threshold_pct": 10, "window_ms": 600000}}
+  }
+}
+```
+
+Hosts are validated and normalized (lower-cased, IPv6 compressed, brackets removed). A URL or a
+`host:port` is rejected with a message saying what to change. `retries` (0–10) applies to HTTP and
+TCP probes; ICMP hop probes never retry.
+
+`POST /api/targets` creates a UI-managed target from a definition (201, the target object; 409 on
+a duplicate name, 400 on a validation error). The simple form of earlier versions is still accepted:
 ```json
 {"name": "my-isp", "host": "example.com", "icmp_interval_ms": 2500,
  "http_url": "https://example.com/", "tcp_port": 443}
 ```
-`http_url`, `tcp_port`, `icmp_interval_ms` are optional. Response: the created target object (as above).
+Unknown fields are rejected.
+
+`GET /api/targets/{id}/config` → `{"id", "source", "overridden", "target": <definition>}`. The
+definition is normalized for editing: an implied icmp-trace probe is listed, target-level
+intervals and retries are moved onto the probes, and alert settings keyed by rule type are
+expanded to rule names.
+
+`PUT /api/targets/{id}` with a definition → 200, the target object. Applies immediately. A UI
+target may be renamed (its history is kept). A config-file target keeps its name (400 on a
+rename); its edited definition is stored in the database and overrides the file until reverted.
+Changing a probe's identity (HTTP method or URL, TCP port) starts a new history for that probe;
+intervals, timeouts and retries do not.
+
+`DELETE /api/targets/{id}/override` → 204: a config-file target uses its file definition again
+(409 if it has no UI edits).
 
 `DELETE /api/targets/{id}` → 204. Only for `source: "ui"`; 403 for config targets.
 
 `POST /api/targets/{id}/pause` / `POST /api/targets/{id}/resume` → 204 (UI targets and config targets; runtime only for config targets).
+
+`GET /api/resolve?host=…` validates a host as a target would and resolves a hostname with the
+system resolver:
+```json
+{"valid": true, "host": "example.com.", "kind": "hostname", "addresses": ["93.184.215.14", "2606:2800:21f:cb07:6820:80da:af6b:34"]}
+{"valid": true, "host": "nas.lan", "kind": "hostname", "addresses": [], "resolve_error": "no such host"}
+{"valid": false, "error": "invalid host \"example.com:443\": remove the port (:443); ..."}
+```
+
+## Settings
+
+Settings edited in the UI are stored in the database and replace the matching section of the
+config file until reverted. Changes apply immediately (no restart).
+
+`GET /api/settings`
+```json
+{
+  "defaults":   {"source": "file", "value": {...}, "file": {...}},
+  "status":     {"source": "ui",   "value": {"degraded_loss_pct": 2, "degraded_http_success_pct": 99}, "file": {...}},
+  "alerts":     {"source": "file", "value": {"rules": [...], "cooldown_ms": 1800000, "clear_ratio": 0.7}, "file": {...}},
+  "dns_probes": {"source": "file", "value": [{"name": "home-resolver", "server": "192.168.1.1:53", "query": "example.com", "record": "A"}], "file": [...]},
+  "channels": {"webhook": true, "email": false},
+  "rule_types": ["cert_expiry", "dns_failure", ...],
+  "max_retries": 10
+}
+```
+`source` is `ui` when the section was edited in the UI, `file` otherwise; `file` is what a revert
+restores. Value shapes:
+- `defaults`: `icmp_interval_ms`, `icmp_timeout_ms`, `tcp_interval_ms`, `tcp_timeout_ms`,
+  `http_interval_ms`, `http_timeout_ms`, `dns_interval_ms`, `dns_timeout_ms`,
+  `path_rediscovery_ms`, `max_hops`, `retries` (0 = built-in default, except `retries`).
+- `alerts.rules[]`: `name`, `type`, `enabled`, `notify`, and the parameters of the type:
+  `consecutive`, `metric`, `multiplier`, `min_delta_ms`, `sustain_ms`, `baseline_window_ms`,
+  `min_baseline_ms`, `threshold_pct`, `window_ms`, `warn_before_ms`. Channels, maintenance
+  windows, the heartbeat and the outbox stay in the config file.
+- `dns_probes[]`: `name`, `server`, `query`, `record`, `interval_ms`, `timeout_ms`, `retries`.
+
+`PUT /api/settings/{defaults|status|alerts|dns_probes}` with the section's value → 200 and the
+full settings (as `GET`). 400 with every validation problem (for example a rule a target still
+refers to). Unknown fields are rejected.
+
+`DELETE /api/settings/{section}` → 200 and the full settings: the section comes from the config
+file again.
 
 ## Overview sparklines
 

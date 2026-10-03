@@ -151,6 +151,8 @@ If you use the DSM firewall (Control Panel -> Security -> Firewall), add an allo
 
 Change the tag in the `image:` line of the stack and update the stack.
 
+> **Before the first release:** `latest` appears once the code is merged into the `main` branch. Until then, only `edge` exists. If Portainer reports `manifest unknown` for `latest`, change the image line to `ghcr.io/i-press-buttons/pathwatch:edge`.
+
 ### Which Synology models work
 
 The image is published for **linux/amd64** (Intel and AMD CPU models) and **linux/arm64** (64-bit ARM CPU models).

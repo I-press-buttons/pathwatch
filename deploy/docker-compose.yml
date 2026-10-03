@@ -13,6 +13,8 @@ services:
   pathwatch:
     # "latest" follows the main branch; "edge" is the newest test build;
     # semver tags (e.g. :1.0.0) are published for releases.
+    # (Before the first merge to main only "edge" exists; use it if "latest"
+    # reports "manifest unknown".)
     image: ghcr.io/i-press-buttons/pathwatch:latest
     container_name: pathwatch
 

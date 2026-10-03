@@ -17,8 +17,13 @@ A self-hosted, always-on network path monitor in the spirit of [PingPlotter](htt
 <!-- screenshots -->
 ## Screenshots
 
-_Screenshots coming soon._
+Screenshots use demo data.
 
+| Target page (Classic theme) | Overview (Dark theme) |
+|---|---|
+| ![Target page](docs/screenshots/target-classic.png) | ![Overview](docs/screenshots/overview-dark.png) |
+
+Nine built-in themes: Auto, Light, Dark, Midnight, Nord, Solarized Light, Solarized Dark, High Contrast, and Classic (PingPlotter-style green/yellow/red scale). Pick one from the header; the choice is remembered per browser.
 <!-- /screenshots -->
 
 ## Quick start (Docker)

@@ -1,0 +1,58 @@
+# pathwatch stack for Synology + Portainer.
+#
+# Portainer -> Stacks -> Add stack -> Web editor -> paste this file.
+# Full walkthrough: docs/SYNOLOGY.md
+#
+# Before deploying, create the folder /volume1/docker/pathwatch in File Station
+# (change the path below if your volume is not volume1).
+
+services:
+  pathwatch:
+    # "latest" follows the main branch. Use "edge" for the newest test build,
+    # or pin a release such as ghcr.io/i-press-buttons/pathwatch:1.0.0
+    image: ghcr.io/i-press-buttons/pathwatch:latest
+    container_name: pathwatch
+
+    # Host networking is important. It lets pathwatch send its probes straight
+    # out of the NAS, so the hop-by-hop path you see is the path your real
+    # traffic takes. With the default Docker bridge, an extra NAT hop appears
+    # at the start of every path and raw ICMP replies can get lost. It also
+    # means the web UI is reached on the NAS's own IP (no "ports:" section is
+    # needed or used).
+    network_mode: host
+
+    # Permission to open raw ICMP sockets. Needed to trace hops (TTL-limited
+    # probes). Without it pathwatch falls back to icmp_mode "unavailable".
+    cap_add:
+      - NET_RAW
+
+    restart: unless-stopped
+
+    environment:
+      # Your time zone, for log timestamps and maintenance windows.
+      # List: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+      TZ: "America/New_York"
+
+      # Password for the web UI (user: admin, unless PATHWATCH_USER is set).
+      # Recommended: remove the leading "#" and choose your own password.
+      # If you leave it commented out, pathwatch generates a random password
+      # on first start and prints it in the container log (see
+      # docs/SYNOLOGY.md, "Find your password").
+      # PATHWATCH_PASSWORD: "choose-a-long-password"
+
+      # Address and port for the web UI. With host networking this port is
+      # opened directly on the NAS, so change it if 8095 is already in use.
+      # The built-in healthcheck follows this value automatically.
+      PATHWATCH_LISTEN: "0.0.0.0:8095"
+
+      # Optional: user name for the web UI (default "admin").
+      # PATHWATCH_USER: "admin"
+
+    # Everything pathwatch stores (config, database, generated password) lives
+    # in /data inside the container. This folder must be on a local NAS volume,
+    # not a network share (the SQLite database does not work on NFS/SMB).
+    volumes:
+      - /volume1/docker/pathwatch:/data
+
+    # No healthcheck is declared here on purpose: the image ships one that
+    # calls GET /healthz on the port from PATHWATCH_LISTEN.

@@ -1,0 +1,51 @@
+# Generic docker compose file for pathwatch (Linux server, NAS, Raspberry Pi).
+# Synology + Portainer users: use deploy/portainer-stack.yml instead.
+#
+#   export PATHWATCH_PASSWORD='something-long'   # optional, see below
+#   docker compose up -d
+#   docker compose logs -f
+#
+# Copy this file to its own folder first (./data below is created next to it).
+#
+# Then open http://<this-machine>:8095
+
+services:
+  pathwatch:
+    # "latest" follows the main branch; "edge" is the newest test build;
+    # semver tags (e.g. :1.0.0) are published for releases.
+    image: ghcr.io/i-press-buttons/pathwatch:latest
+    container_name: pathwatch
+
+    # Host networking: probes leave the machine directly, so the traced path
+    # matches what real traffic does. A bridge network would add a Docker NAT
+    # hop to every path. The web UI is then served on the host's own IP, so
+    # there is no "ports:" section.
+    network_mode: host
+
+    # Raw ICMP sockets for hop-by-hop tracing.
+    cap_add:
+      - NET_RAW
+
+    restart: unless-stopped
+
+    environment:
+      - TZ=${TZ:-UTC}
+      # Web UI password (user "admin"), taken from your shell/.env if set.
+      # If it is not set, a random password is generated on first start,
+      # saved to /data/.pathwatch-password and printed in the container log.
+      - PATHWATCH_PASSWORD
+      # Change the port here if 8095 is taken. The healthcheck follows it.
+      - PATHWATCH_LISTEN=${PATHWATCH_LISTEN:-0.0.0.0:8095}
+
+    # Config (pathwatch.yaml), database and generated password. Keep this on
+    # local disk, not NFS/SMB. A starter config is created on first run; edit
+    # ./data/pathwatch.yaml and run "docker compose restart pathwatch".
+    # To use a named volume instead, replace with "pathwatch-data:/data" and
+    # uncomment the volumes: block at the bottom.
+    volumes:
+      - ./data:/data
+
+    # Healthcheck (GET /healthz) is built into the image.
+
+# volumes:
+#   pathwatch-data:

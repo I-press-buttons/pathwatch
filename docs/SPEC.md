@@ -508,6 +508,20 @@ Config rules:
 - **Privacy:** no telemetry and no calls to third-party APIs by default. Reverse DNS for hop addresses goes to the system resolver (can be disabled). ASN enrichment uses a user-supplied local GeoLite2 ASN database, or DNS-based lookup (Team Cymru), which is **off by default**. Private and CGNAT addresses are never looked up. The heartbeat is off unless configured.
 - **Security defaults:** bind to loopback, require auth if bound elsewhere, never log secrets, secrets only from environment variables.
 
+## v1 deployment and UX additions (Synology + Portainer)
+
+These additions take precedence over earlier sections where they conflict.
+
+- **One volume, zero-config first run.** In Docker everything lives under `/data`: `/data/pathwatch.yaml` and `/data/pathwatch.db`. If the config file is missing, pathwatch writes a commented starter config with a few example targets (cloudflare.com with HTTP, 1.1.1.1, 8.8.8.8) and starts.
+- **Environment overrides** (handy in Portainer): `PATHWATCH_CONFIG` (default `/data/pathwatch.yaml` in the image), `PATHWATCH_DB` (overrides `storage.path`), `PATHWATCH_LISTEN` (overrides `listen`; image default `0.0.0.0:8095`), `PATHWATCH_PASSWORD` (Basic auth password, user defaults to `admin`), `PATHWATCH_USER`, `TZ`.
+- **Generated password.** If the bind is not loopback and no password is configured, pathwatch generates a random password on first start, stores it in `/data/.pathwatch-password`, and logs it prominently. This replaces "startup fails". Auth is still always on when the bind is not loopback.
+- **UI-managed targets (PingPlotter-style).** Targets can be added, paused, and removed in the UI (stored in the database, `source: ui`) in addition to config-file targets (`source: config`, read-only in the UI apart from pause). This revises the "UI is read-only" non-goal.
+- **PingPlotter-style views:** a hop grid (hop, IP, hostname, sent/lost, loss %, min/avg/max/cur/p95, jitter, classification, inline latency bar), the path timeline heatmap, and a latency/loss graph for the selected hop (default: destination). Clicking a hop row selects it. Also live updates via SSE.
+- **MOS score** per target from latency, jitter, and loss (simplified ITU-T G.107 E-model), shown in summary cards and the overview.
+- **Themes.** Several built-in themes selectable in the UI and remembered per browser: Auto (follows `prefers-color-scheme`), Light, Dark, Midnight, Nord, Solarized Light, Solarized Dark, High Contrast, and Classic (PingPlotter-like green/yellow/red latency scale). Each theme defines its UI colors and its latency/loss color scale.
+- **Image:** `ghcr.io/i-press-buttons/pathwatch`, multi-arch (linux/amd64, linux/arm64). Tags: `latest` from the default branch, `edge` from any other branch push, and semver tags on releases. Runs as root inside the container (simplest reliable raw-socket access on Synology kernels), with `network_mode: host` and `cap_add: [NET_RAW]`.
+- **API contract:** see [API.md](API.md).
+
 ## Known pitfalls
 
 - Router ICMP rate limiting and deprioritization (see the central insight above).

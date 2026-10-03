@@ -294,12 +294,12 @@ Rules are defined globally and apply to every target that has the probes a rule 
 |---|---|
 | `http_failure` | Error or unexpected status for N consecutive HTTP probes |
 | `http_latency` | Total (or TTFB) above `multiplier` × baseline **and** above baseline + `min_delta`, sustained for `sustain` |
-| `final_hop_loss` | End-to-end loss (destination ICMP, or TCP probe for ICMP-unresponsive targets) above `threshold_pct` over `window` |
+| `final_hop_loss` | End-to-end loss (destination ICMP, or TCP probe for ICMP-unresponsive targets) above `threshold_pct` over `window` (the window must be fully covered by data; loss at an intermediate hop, which is what the end-to-end figure falls back to when neither the destination nor a TCP probe answers, never alerts) |
 | `path_degradation` | The hop classifier marks degradation as real (a hop and all downstream signals degraded) for `sustain` |
 | `tcp_failure` | N consecutive TCP connect failures |
 | `dns_failure` / `dns_latency` | DNS probe errors / SERVFAIL for N consecutive probes, or latency anomaly |
 | `cert_expiry` | Certificate expires within `warn_before` (default 14d); fires once per certificate |
-| `route_change` | Optional, off by default: notify when a new path version starts |
+| `route_change` | Optional, off by default: notify when a new path version starts. A one-shot alert: it is recorded as resolved immediately and sends a single notification (state `event`) |
 | `local_connectivity` | Built in; see [Local outage detection](#local-outage-detection) |
 
 ### Baselines and anomaly detection
@@ -308,25 +308,27 @@ Rolling median plus MAD per metric, computed from 1-minute rollups over `baselin
 
 - **Cold start:** latency-anomaly rules stay inactive until the baseline holds at least `min_baseline` of data (default 2h). The UI shows "learning baseline".
 - **Frozen while firing:** the baseline is frozen while an alert on that metric is firing, and periods spent in an alert are excluded from future baselines. Otherwise a long incident becomes the new normal and resolves itself.
-- **Absolute floor:** a latency alert requires both the multiplier and `min_delta` (default 50ms), so 3× a 5ms baseline doesn't page.
+- **Absolute floor:** a latency alert requires both the multiplier and `min_delta` (default 50ms), so 3× a 5ms baseline doesn't page. It also has to clear a noise band of 4 robust standard deviations (1.4826 × MAD) above the median, so a naturally jittery metric needs a bigger excursion.
+- The baseline is a median over per-minute averages, cached and recomputed every five minutes (not every minute), and it leaves out the most recent `sustain` + 1 minute so the excursion being judged cannot feed it.
 - Monitor gaps are excluded from baselines.
 
 ### Noise control
 
 - A condition must hold for its window/sustain before firing.
-- Hysteresis: clear at a lower threshold than the trigger (default 70% of the trigger threshold) and only after holding for the same window.
+- Hysteresis: clear at a lower threshold than the trigger (default 70% of the trigger threshold) and only after holding for the same window. For latency rules whose 70% would not even be above the baseline (a small multiplier), the clear level is the midpoint between baseline and trigger. For `final_hop_loss` the trailing `window` of loss is itself the hold: it fires when the loss over the last full window exceeds the threshold and clears when the loss over the last full window is below the clear level. Consecutive-failure rules (`http_failure`, `tcp_failure`, `dns_failure`) clear after the same number of consecutive successes. The recorded end time of an alert is when the problem stopped (the start of the clear hold), not when the hold finished.
 - Per (target, rule) cooldown after a resolve before the same alert can fire again.
 - A "resolved" notification includes the duration. Cooldown never suppresses resolved notifications.
-- Alert state persists in SQLite, so a restart neither re-fires nor loses active alerts.
+- Alert state persists in SQLite, so a restart neither re-fires nor loses active alerts (cooldowns, and the "once per certificate" and "once per route change" memory, are restored too).
+- Probe-based rules (consecutive failures, `cert_expiry`) are evaluated when the minute a probe result belongs to is analysed, so the local-outage verdict for that time is known first. Alerts for them therefore appear up to about two minutes after the condition begins.
 
 ### Silences and maintenance windows
 
-- **Silences** are created in the UI or config, scoped to a target, a rule, or everything, with a start and end time. Silenced alerts are still evaluated and logged ("suppressed by silence") but not sent.
+- **Silences** are created in the UI or config, scoped to a target, a rule (name or type), or everything, with a start and end time. Silenced alerts are still evaluated and logged ("suppressed by silence") but not sent. A suppressed alert (silence, maintenance window or cooldown) whose condition is still true when the suppression ends becomes a firing alert and is sent then, with its real start time; one suppressed by a local outage stays suppressed. A firing alert is never affected by a silence created later, and its "resolved" notification is always sent.
 - **Maintenance windows** are recurring silences defined in config (for example, the ISP's nightly maintenance or the NAS's scheduled reboot), with a cron-like weekday + time range.
 
 ### Delivery: outbox and retry
 
-Every notification is written to the `outbox` table first, then delivered by a sender goroutine with exponential backoff (up to `max_age`, default 24h). Notifications about an outage of your own connection are therefore delivered when it comes back, and include the actual start and end times. Delivery status appears in the alerts feed.
+Every notification is written to the `outbox` table first, then delivered by a sender goroutine with exponential backoff (30s, 1m, 2m, 4m, 8m, then every 15m, up to `max_age`, default 24h). Statuses: `queued`, `retrying`, `delivered`, `failed` (cannot ever succeed, e.g. a broken `body_template`) and `expired`. A "resolved" notification is never sent before the "firing" one of the same alert and channel. Notifications about an outage of your own connection are therefore delivered when it comes back, and include the actual start and end times. Delivery status appears in the alerts feed.
 
 ### Heartbeat (dead-man's switch)
 
@@ -334,7 +336,7 @@ Optional: `heartbeat.url` gets a GET every `heartbeat.interval` while pathwatch 
 
 ### Channels
 
-- **Webhook:** POST JSON containing target, rule, state (firing or resolved), current value, baseline, timestamps, and a deep link (if `public_url` is set). Presets for `discord`, `slack` (and Slack-compatible), `ntfy`, and `generic` (raw JSON, for n8n or Home Assistant). A custom body is possible via a Go `text/template`. Optional custom headers (values may reference environment variables).
+- **Webhook:** POST JSON containing target, rule, state (firing or resolved; `event` for one-shot `route_change` alerts), current value, baseline, timestamps (RFC 3339 and Unix ms), and a deep link (if `public_url` is set). The URL comes from `url_env` and, like header values, is never logged; header values may use `${ENV_VAR}`. Requests time out after 10s and a non-2xx response counts as a failure. Presets for `discord`, `slack` (and Slack-compatible), `ntfy`, and `generic` (raw JSON, for n8n or Home Assistant). A custom body is possible via a Go `text/template`. Optional custom headers (values may reference environment variables).
 - **Email:** SMTP with host, port, and TLS mode `starttls` (587), `tls` (implicit TLS, 465), or `none`. Username and password come from environment variables. One message per alert event, not per probe.
 - **Routing:** each rule may list the channels it notifies (default: all). For example, route changes could go to the webhook only.
 

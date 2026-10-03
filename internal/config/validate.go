@@ -246,6 +246,16 @@ func (c *Config) validateAlerts() []error {
 		default:
 			add("alerts.notify.webhook.preset %q must be discord, slack, ntfy or generic", w.Preset)
 		}
+		if w.BodyTemplate != "" {
+			if _, err := ParseWebhookTemplate(w.BodyTemplate); err != nil {
+				add("alerts.notify.webhook.body_template: %v", err)
+			}
+		}
+		for k := range w.Headers {
+			if strings.TrimSpace(k) == "" || strings.ContainsAny(k, " \t\r\n:") {
+				add("alerts.notify.webhook.headers: invalid header name %q", k)
+			}
+		}
 		if w.URLEnv == "" {
 			add("alerts.notify.webhook.url_env is required (webhook URLs are secrets and come from the environment)")
 		}

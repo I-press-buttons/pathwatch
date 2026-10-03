@@ -1,30 +1,23 @@
-// Package alert is the seam for the alert rule engine and notification senders.
+// Package alert is the alert rule engine and the notification senders.
 //
-// PHASE STATUS: only the seam exists. The alerts, outbox and silences tables are created by the
-// store migrations, /api/alerts, /api/silences and /api/events read and write them, and the
-// analyzer already publishes everything a rule engine needs. The engine itself (rules, baselines,
-// state machine, cooldown/hysteresis, outbox sender goroutine, webhook/email senders, heartbeat)
-// is the next phase.
+// RuleEngine (ruleengine.go) implements Engine. cmd/pathwatch passes it to analyze.New, which
+// calls it from the aggregation goroutine:
 //
-// # How to plug the engine in
+//   - HandleMinute is called once per completed 1-minute bucket with per-target aggregates
+//     (end-to-end stats, per-hop stats with their rate-limited or degraded classification,
+//     HTTP/TCP probe stats), the DNS probe stats and the local-connectivity state. Gaps never
+//     produce a Minute for the affected period, so rules never trigger or resolve on "no data".
+//   - HandleProbe is called for every individual HTTP/TCP/DNS probe result, for the rules that
+//     count consecutive failures (http_failure, tcp_failure, dns_failure) and cert_expiry.
 //
-// Implement Engine and pass it to analyze.New (cmd/pathwatch wires it; today it is Nop{}):
+// Files: rules.go (rule resolution, thresholds), state.go (the pending -> firing -> resolved state
+// machine, suppression, persistence), baseline.go (cached median/MAD baselines),
+// ruleengine.go (evaluation of every rule type), outbox.go (persistent outbox, retry with
+// backoff), webhook.go and email.go (the channels), heartbeat.go (dead-man's switch).
 //
-//   - HandleMinute is called once per completed 1-minute bucket, from the aggregation goroutine,
-//     with per-target aggregates (end-to-end stats, per-hop stats with their rate-limited or
-//     degraded classification, HTTP/TCP probe stats, certificate expiry), the DNS probe stats and
-//     the local-connectivity state. Gaps never produce a Minute for the affected period, so rules
-//     never trigger or resolve on "no data".
-//   - HandleProbe is called for every individual HTTP/TCP/DNS probe result, for rules that count
-//     consecutive failures (http_failure, tcp_failure, dns_failure) and cert_expiry.
-//   - Persist alerts with store.SaveAlert (inserts when ID == 0), read silences with
-//     store.Silences plus MaintenanceWindows.Active, and queue notifications in the outbox table.
-//   - After saving or changing an alert call the AlertSink (web.Hub implements it) so the UI gets
-//     an SSE "alert" event.
-//   - Rule parameters live in config.Config.Alerts (already parsed and validated, including
-//     per-target disable/override via config.Target.Alerts and RuleOverride.Apply).
-//   - The `status` of targets becomes "alerting" automatically once firing rows exist in the
-//     alerts table (web reads store.ActiveAlertCounts).
+// Every alert change is stored with store.SaveAlert and announced to the AlertSink (web.Hub
+// implements it) so the UI receives an SSE "alert" event. Notifications are written to the
+// outbox table first and delivered by the Sender goroutine.
 package alert
 
 import "time"
@@ -45,7 +38,7 @@ type AlertSink interface {
 	AlertChanged(alertID int64)
 }
 
-// Nop is the engine used until the rule engine exists.
+// Nop is an engine that ignores everything (tests and tools that do not need alerting).
 type Nop struct{}
 
 // HandleMinute implements Engine.

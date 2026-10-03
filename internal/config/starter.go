@@ -75,7 +75,16 @@ targets:
 #     query: example.com
 #     record: A
 
-# Alert rules are validated now; delivery (webhook/email) arrives in a later release.
+# Alerting. Rules apply to every target that has the probes a rule needs.
+# Targets can disable rules or override parameters:
+#   alerts:
+#     disable: [route_change]
+#     override:
+#       end-loss: { threshold_pct: 10 }
+# Alerts show up in the web UI without any channel configured; add a webhook
+# and/or email below to be notified. Notifications are queued in the database
+# and retried for up to outbox.max_age, so alerts about your own outage arrive
+# once the connection is back.
 alerts:
   rules:
     - name: http-down
@@ -83,7 +92,9 @@ alerts:
       consecutive: 3
     - name: http-slow
       type: http_latency
-      metric: total
+      metric: total                      # total | ttfb
+      baseline_window: 24h
+      min_baseline: 2h                   # inactive until this much history exists
       multiplier: 3
       min_delta: 50ms
       sustain: 5m
@@ -103,6 +114,10 @@ alerts:
     - name: cert
       type: cert_expiry
       warn_before: 14d
+    - name: route
+      type: route_change
+      enabled: false                     # notify whenever the path changes
+      # notify: [webhook]                # per-rule channel routing (default: all)
   cooldown: 30m
   clear_ratio: 0.7
   # maintenance_windows:
@@ -111,11 +126,34 @@ alerts:
   #     start: "03:00"
   #     end: "04:00"
   #     timezone: America/New_York
-  # heartbeat:
-  #   url: ""                              # e.g. a healthchecks.io ping URL
+  # heartbeat:                           # dead-man's switch, pinged while healthy
+  #   url: ""                            # e.g. a healthchecks.io ping URL
   #   interval: 5m
+  # outbox:
+  #   max_age: 24h                       # give up on undelivered notifications after this
+  #
+  # Webhook: the URL is a secret and is read from an environment variable.
+  # Presets: generic (JSON, for n8n / Home Assistant), discord, slack, ntfy.
   # notify:
   #   webhook:
-  #     url_env: PATHWATCH_WEBHOOK_URL
-  #     preset: discord                    # discord | slack | ntfy | generic
+  #     url_env: PATHWATCH_WEBHOOK_URL   # export PATHWATCH_WEBHOOK_URL=https://...
+  #     preset: generic                  # generic | discord | slack | ntfy
+  #     # headers:                       # values may reference environment variables
+  #     #   Authorization: "Bearer ${NTFY_TOKEN}"
+  #     # body_template: |               # Go text/template; replaces the preset body
+  #     #   {"text": {{json .Title}}, "state": "{{.State}}", "link": "{{.Link}}"}
+  #
+  #   Examples (set one preset):
+  #     discord:  url_env -> https://discord.com/api/webhooks/<id>/<token>
+  #     slack:    url_env -> https://hooks.slack.com/services/T000/B000/XXXX
+  #     ntfy:     url_env -> https://ntfy.sh/<your-topic>  (add an Authorization header if protected)
+  #
+  #   email:
+  #     smtp_host: smtp.example.com
+  #     smtp_port: 587                   # 587 starttls, 465 tls, 25 none
+  #     tls: starttls                    # starttls | tls | none
+  #     username_env: SMTP_USER
+  #     password_env: SMTP_PASSWORD
+  #     from: pathwatch@example.com
+  #     to: [you@example.com]
 `

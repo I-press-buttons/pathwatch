@@ -152,7 +152,18 @@ func run(cfg *config.Config, log *slog.Logger) error {
 		Store: st, Prober: sp, Observer: fanout{hub: hub, an: &anPtr}, Logger: log,
 		Defaults: cfg.Defaults, Version: version,
 	})
-	var engine alert.Engine = alert.Nop{} // TODO(next phase): the alert rule engine plugs in here
+	engine := alert.NewRuleEngine(alert.RuleEngineOptions{
+		Store: st, Sink: hub, Config: cfg, Log: log,
+		// the heartbeat shares /healthz's health signal
+		Healthy: func() bool {
+			if !st.WriterAlive() {
+				return false
+			}
+			ok, _ := sched.Healthy()
+			return ok
+		},
+	})
+	engine.Start()
 	defer engine.Close()
 	an := analyze.New(st, sched, engine, log)
 	anPtr.Store(an)
@@ -185,7 +196,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	}
 	log.Info("web UI listening", "url", scheme+"://"+ln.Addr().String()+"/")
 
-	go watchReload(ctx, cfg.Path, sched, log)
+	go watchReload(ctx, cfg.Path, sched, engine, log)
 
 	err = srv.ListenAndServe(ctx, ln)
 	log.Info("shutting down")
@@ -198,8 +209,9 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	return nil
 }
 
-// watchReload re-reads the config on SIGHUP and applies targets and DNS probes.
-func watchReload(ctx context.Context, path string, sched *scheduler.Scheduler, log *slog.Logger) {
+// watchReload re-reads the config on SIGHUP and applies targets, DNS probes and the alert
+// rules, channels and heartbeat.
+func watchReload(ctx context.Context, path string, sched *scheduler.Scheduler, engine *alert.RuleEngine, log *slog.Logger) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGHUP)
 	defer signal.Stop(ch)
@@ -218,6 +230,7 @@ func watchReload(ctx context.Context, path string, sched *scheduler.Scheduler, l
 			log.Error("applying reloaded config failed", "err", err)
 			continue
 		}
+		engine.Reload(cfg)
 		log.Info("config reloaded", "targets", len(cfg.Targets), "dns_probes", len(cfg.DNSProbes))
 	}
 }

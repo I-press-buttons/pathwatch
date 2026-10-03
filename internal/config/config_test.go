@@ -335,3 +335,53 @@ func TestProbeKeysAndLabels(t *testing.T) {
 		t.Error("tcp label")
 	}
 }
+
+func TestStarterConfigAlertsSection(t *testing.T) {
+	cfg, err := Parse([]byte(StarterConfig), env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var route *RuleConfig
+	for i := range cfg.Alerts.Rules {
+		if cfg.Alerts.Rules[i].Type == "route_change" {
+			route = &cfg.Alerts.Rules[i]
+		}
+	}
+	if route == nil || route.IsEnabled() {
+		t.Fatalf("starter config should list route_change disabled: %+v", route)
+	}
+	// the commented webhook example becomes valid when uncommented
+	yaml := strings.Replace(StarterConfig, "  # notify:\n  #   webhook:\n  #     url_env: PATHWATCH_WEBHOOK_URL   # export PATHWATCH_WEBHOOK_URL=https://...\n  #     preset: generic                  # generic | discord | slack | ntfy\n",
+		"  notify:\n    webhook:\n      url_env: PATHWATCH_WEBHOOK_URL\n      preset: generic\n", 1)
+	if yaml == StarterConfig {
+		t.Fatal("the starter config no longer contains the commented webhook example")
+	}
+	cfg, err = Parse([]byte(yaml), env(nil))
+	if err != nil {
+		t.Fatalf("uncommented webhook example: %v", err)
+	}
+	if cfg.Alerts.Notify.Webhook == nil || cfg.Alerts.Notify.Webhook.Preset != "generic" || cfg.Alerts.Notify.Webhook.URLEnv != "PATHWATCH_WEBHOOK_URL" {
+		t.Fatalf("webhook not parsed: %+v", cfg.Alerts.Notify.Webhook)
+	}
+	for _, preset := range []string{"discord", "slack", "ntfy"} {
+		if !strings.Contains(StarterConfig, preset) {
+			t.Errorf("starter config does not mention the %s preset", preset)
+		}
+	}
+}
+
+func TestWebhookBodyTemplateAndHeadersValidated(t *testing.T) {
+	base := "alerts:\n  notify:\n    webhook:\n      url_env: HOOK\n"
+	if _, err := Parse([]byte(base+"      body_template: '{{.Title}} {{json .Message}}'\n      headers: {X-Token: \"${TOKEN}\"}\n"), env(nil)); err != nil {
+		t.Fatalf("valid template rejected: %v", err)
+	}
+	if _, err := Parse([]byte(base+"      body_template: '{{.Title'\n"), env(nil)); err == nil || !strings.Contains(err.Error(), "body_template") {
+		t.Fatalf("broken template accepted: %v", err)
+	}
+	if _, err := Parse([]byte(base+"      body_template: '{{nosuchfunc .X}}'\n"), env(nil)); err == nil {
+		t.Fatal("unknown template function accepted")
+	}
+	if _, err := Parse([]byte(base+"      headers: {\"Bad Header\": x}\n"), env(nil)); err == nil || !strings.Contains(err.Error(), "header name") {
+		t.Fatalf("bad header name accepted: %v", err)
+	}
+}

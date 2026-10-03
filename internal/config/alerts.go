@@ -1,8 +1,13 @@
 package config
 
-import "time"
+import (
+	"encoding/json"
+	"strings"
+	"text/template"
+	"time"
+)
 
-// AlertsConfig is parsed and validated now; the rule engine consumes it in a later phase.
+// AlertsConfig holds the alert rules, noise control and notification channels.
 type AlertsConfig struct {
 	Rules              []RuleConfig        `yaml:"rules"`
 	Cooldown           Duration            `yaml:"cooldown"`
@@ -117,7 +122,9 @@ type NotifyConfig struct {
 	Email   *EmailConfig   `yaml:"email"`
 }
 
-// WebhookConfig configures the webhook channel. The URL comes from an env var.
+// WebhookConfig configures the webhook channel. The URL comes from an env var. Header values
+// may reference environment variables ($NAME or ${NAME}), expanded when a notification is sent.
+// BodyTemplate is an optional Go text/template that replaces the preset's body.
 type WebhookConfig struct {
 	URLEnv       string            `yaml:"url_env"`
 	Preset       string            `yaml:"preset"`
@@ -207,4 +214,23 @@ func (a *AlertsConfig) applyDefaults() {
 			}
 		}
 	}
+}
+
+// WebhookTemplateFuncs are the helper functions available to webhook body templates:
+// json (a value as a JSON literal), upper, lower and trim.
+func WebhookTemplateFuncs() template.FuncMap {
+	return template.FuncMap{
+		"json": func(v any) (string, error) {
+			b, err := json.Marshal(v)
+			return string(b), err
+		},
+		"upper": strings.ToUpper,
+		"lower": strings.ToLower,
+		"trim":  strings.TrimSpace,
+	}
+}
+
+// ParseWebhookTemplate parses a webhook body template.
+func ParseWebhookTemplate(text string) (*template.Template, error) {
+	return template.New("webhook").Funcs(WebhookTemplateFuncs()).Option("missingkey=zero").Parse(text)
 }

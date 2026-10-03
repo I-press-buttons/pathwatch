@@ -1,0 +1,35 @@
+# VCS, CI and local tooling
+.git
+.gitignore
+.github
+.claude
+
+# Deploy files are not needed to build (deploy/healthcheck.sh is)
+deploy/*
+!deploy/healthcheck.sh
+
+# Local state and build output
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.sqlite
+/data
+/dist
+/bin
+/pathwatch
+/pathwatch.exe
+/pathwatch.yaml
+.pathwatch-password
+*.test
+*.out
+coverage.*
+
+# Screenshots (README only)
+docs/screenshots
+
+# Editor / OS junk
+.idea
+.vscode
+*.swp
+.DS_Store
+Thumbs.db

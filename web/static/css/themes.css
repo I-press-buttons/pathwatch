@@ -1,0 +1,163 @@
+/* pathwatch themes.
+ *
+ * A theme is a block of CSS custom properties. Selector: :root[data-theme="<id>"].
+ * ("Auto" is not a block: js/theme.js and the inline <head> script resolve it to
+ * "light" or "dark" via prefers-color-scheme and set data-theme to the result;
+ * the user's choice lives in data-theme-pref and localStorage "pathwatch.theme".)
+ *
+ * Every theme MUST define all of these (values must be #rrggbb hex, because
+ * canvas/uPlot code parses them via getComputedStyle):
+ *   UI       --bg --surface --surface-2 --border --border-strong --text --text-muted --text-faint
+ *            --accent --accent-fg --ok --warn --crit --info
+ *   Latency  --lat-0 .. --lat-4   sequential scale, low latency -> high latency
+ *   Loss     --loss-0 (light loss) --loss-1 (heavy loss)
+ *   Gaps     --gap-hatch (hatch lines) --gap-bg
+ *   Charts   --chart-grid --chart-axis --series-line --series-band --series-loss --bar
+ *            --ph-dns --ph-tcp --ph-tls --ph-ttfb --ph-transfer   HTTP phase colours
+ *            --tcp-line --fail   TCP overlay line, failure markers
+ *            --ev-route --ev-alert --ev-rl   timeline event markers
+ */
+
+/* Light */
+:root[data-theme="light"],
+.theme-preview[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f3f5f8; --surface: #ffffff; --surface-2: #f0f3f7; --border: #d5dce4; --border-strong: #aeb9c5;
+  --text: #17212b; --text-muted: #4a5a6a; --text-faint: #8895a3;
+  --accent: #0a58bd; --accent-fg: #ffffff;
+  --ok: #116a37; --warn: #85540a; --crit: #b3261e; --info: #0a58bd;
+  --lat-0: #d3e4fa;   --lat-1: #9cc3f2;   --lat-2: #5a9be6;
+  --lat-3: #2c6bc4;   --lat-4: #14388a;
+  --loss-0: #f4a3a0; --loss-1: #d92d20;
+  --gap-hatch: #9aa7b5; --gap-bg: #e8ecf1;
+  --chart-grid: #e3e8ee; --chart-axis: #4a5a6a; --series-line: #0a58bd; --series-band: #0a58bd; --series-loss: #d92d20; --bar: #3b82d6;
+  --ph-dns: #8e5bd9; --ph-tcp: #e08a1e; --ph-tls: #d4519f; --ph-ttfb: #2c6bc4; --ph-transfer: #2a9d6f;
+  --tcp-line: #17212b; --fail: #d92d20;
+  --ev-route: #7a45c9; --ev-alert: #d92d20; --ev-rl: #85540a;
+}
+
+/* Dark */
+:root[data-theme="dark"],
+.theme-preview[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1318; --surface: #161c23; --surface-2: #1c242d; --border: #2a3440; --border-strong: #44525f;
+  --text: #e7ecf1; --text-muted: #9eacb9; --text-faint: #6b7a88;
+  --accent: #6aaeff; --accent-fg: #06121f;
+  --ok: #4cc27f; --warn: #e8b04a; --crit: #ff7b72; --info: #6aaeff;
+  --lat-0: #1f3a5c;   --lat-1: #275c9c;   --lat-2: #3d83d6;
+  --lat-3: #7cb6f5;   --lat-4: #d6e9ff;
+  --loss-0: #8a2c35; --loss-1: #ff5a5f;
+  --gap-hatch: #5b6b7a; --gap-bg: #12181e;
+  --chart-grid: #242e38; --chart-axis: #9eacb9; --series-line: #6aaeff; --series-band: #6aaeff; --series-loss: #ff5a5f; --bar: #4a90e2;
+  --ph-dns: #b48cf2; --ph-tcp: #f0a63a; --ph-tls: #ee7fc2; --ph-ttfb: #6aaeff; --ph-transfer: #4cc27f;
+  --tcp-line: #e7ecf1; --fail: #ff5a5f;
+  --ev-route: #b48cf2; --ev-alert: #ff7b72; --ev-rl: #e8b04a;
+}
+
+/* Midnight */
+:root[data-theme="midnight"],
+.theme-preview[data-theme="midnight"] {
+  color-scheme: dark;
+  --bg: #05080f; --surface: #0b1220; --surface-2: #111a2e; --border: #1c2a47; --border-strong: #34476e;
+  --text: #e4ecff; --text-muted: #93a5cc; --text-faint: #5d6f96;
+  --accent: #7fa2ff; --accent-fg: #050a18;
+  --ok: #52d6a0; --warn: #f0c05a; --crit: #ff7f93; --info: #6fd3e8;
+  --lat-0: #0d3a46;   --lat-1: #12667a;   --lat-2: #1e9bb2;
+  --lat-3: #5ed0e0;   --lat-4: #c8f5fb;
+  --loss-0: #8c2a46; --loss-1: #ff4d75;
+  --gap-hatch: #4a5d88; --gap-bg: #080e1a;
+  --chart-grid: #16213a; --chart-axis: #93a5cc; --series-line: #5ed0e0; --series-band: #5ed0e0; --series-loss: #ff4d75; --bar: #1e9bb2;
+  --ph-dns: #b79bff; --ph-tcp: #ffb454; --ph-tls: #ff8fc8; --ph-ttfb: #5ed0e0; --ph-transfer: #52d6a0;
+  --tcp-line: #e4ecff; --fail: #ff4d75;
+  --ev-route: #b79bff; --ev-alert: #ff7f93; --ev-rl: #f0c05a;
+}
+
+/* Nord */
+:root[data-theme="nord"],
+.theme-preview[data-theme="nord"] {
+  color-scheme: dark;
+  --bg: #272c36; --surface: #2e3440; --surface-2: #3b4252; --border: #434c5e; --border-strong: #5b667c;
+  --text: #eceff4; --text-muted: #b4bed0; --text-faint: #7b88a1;
+  --accent: #88c0d0; --accent-fg: #1f2530;
+  --ok: #b3cf9a; --warn: #ebcb8b; --crit: #f0a3ab; --info: #97ccdb;
+  --lat-0: #3d556b;   --lat-1: #4f78a3;   --lat-2: #6e9bc9;
+  --lat-3: #8fbcbb;   --lat-4: #e5f3f1;
+  --loss-0: #8f4c55; --loss-1: #e5707c;
+  --gap-hatch: #6b788f; --gap-bg: #2a303b;
+  --chart-grid: #3b4252; --chart-axis: #b4bed0; --series-line: #88c0d0; --series-band: #88c0d0; --series-loss: #e5707c; --bar: #6e9bc9;
+  --ph-dns: #b48ead; --ph-tcp: #d08770; --ph-tls: #e58bb0; --ph-ttfb: #81a1c1; --ph-transfer: #a3be8c;
+  --tcp-line: #eceff4; --fail: #e5707c;
+  --ev-route: #b48ead; --ev-alert: #e58b94; --ev-rl: #ebcb8b;
+}
+
+/* Solarized Light */
+:root[data-theme="solarized-light"],
+.theme-preview[data-theme="solarized-light"] {
+  color-scheme: light;
+  --bg: #f6efd8; --surface: #fdf6e3; --surface-2: #eee8d5; --border: #d9d2bb; --border-strong: #a9a38f;
+  --text: #073642; --text-muted: #4b6269; --text-faint: #6f7f7f;
+  --accent: #145a93; --accent-fg: #fdf6e3;
+  --ok: #4d5d00; --warn: #7a4d00; --crit: #a41f1a; --info: #145a93;
+  --lat-0: #d1e5ee;   --lat-1: #97c6e0;   --lat-2: #55a2d2;
+  --lat-3: #1f78b4;   --lat-4: #0b3d5f;
+  --loss-0: #eea39b; --loss-1: #d0312d;
+  --gap-hatch: #a3ab9f; --gap-bg: #eee8d5;
+  --chart-grid: #e6dfc8; --chart-axis: #4b6269; --series-line: #145a93; --series-band: #145a93; --series-loss: #d0312d; --bar: #268bd2;
+  --ph-dns: #6c71c4; --ph-tcp: #cb4b16; --ph-tls: #d33682; --ph-ttfb: #268bd2; --ph-transfer: #859900;
+  --tcp-line: #073642; --fail: #d0312d;
+  --ev-route: #6c71c4; --ev-alert: #d0312d; --ev-rl: #8c5a00;
+}
+
+/* Solarized Dark */
+:root[data-theme="solarized-dark"],
+.theme-preview[data-theme="solarized-dark"] {
+  color-scheme: dark;
+  --bg: #00212b; --surface: #002b36; --surface-2: #073642; --border: #124855; --border-strong: #2c6574;
+  --text: #eee8d5; --text-muted: #9fb0b0; --text-faint: #657b83;
+  --accent: #3fb0e8; --accent-fg: #00212b;
+  --ok: #9cbf2a; --warn: #e0a63a; --crit: #ff8c7e; --info: #52bdf0;
+  --lat-0: #0f4a5e;   --lat-1: #14778f;   --lat-2: #2aa1b8;
+  --lat-3: #7cd0de;   --lat-4: #d8f4f8;
+  --loss-0: #8a2f2a; --loss-1: #ff5d52;
+  --gap-hatch: #4f7480; --gap-bg: #00252f;
+  --chart-grid: #0d3a46; --chart-axis: #9fb0b0; --series-line: #3fb0e8; --series-band: #3fb0e8; --series-loss: #ff5d52; --bar: #2aa1b8;
+  --ph-dns: #9a9fe6; --ph-tcp: #e8743b; --ph-tls: #ee6fae; --ph-ttfb: #3fb0e8; --ph-transfer: #9cbf2a;
+  --tcp-line: #eee8d5; --fail: #ff5d52;
+  --ev-route: #9a9fe6; --ev-alert: #ff7a6b; --ev-rl: #e0a63a;
+}
+
+/* High Contrast */
+:root[data-theme="high-contrast"],
+.theme-preview[data-theme="high-contrast"] {
+  color-scheme: dark;
+  --bg: #000000; --surface: #000000; --surface-2: #141414; --border: #ffffff; --border-strong: #ffffff;
+  --text: #ffffff; --text-muted: #e6e6e6; --text-faint: #b3b3b3;
+  --accent: #ffd400; --accent-fg: #000000;
+  --ok: #3dff8a; --warn: #ffd400; --crit: #ff5a5a; --info: #4dd2ff;
+  --lat-0: #0a4fd0;   --lat-1: #00a0f0;   --lat-2: #00e0a8;
+  --lat-3: #ffe600;   --lat-4: #ffffff;
+  --loss-0: #ff8a00; --loss-1: #ff2020;
+  --gap-hatch: #ffffff; --gap-bg: #1a1a1a;
+  --chart-grid: #4d4d4d; --chart-axis: #ffffff; --series-line: #ffd400; --series-band: #ffd400; --series-loss: #ff3030; --bar: #00e0a8;
+  --ph-dns: #c9a0ff; --ph-tcp: #ff9f1a; --ph-tls: #ff7ad1; --ph-ttfb: #4dd2ff; --ph-transfer: #3dff8a;
+  --tcp-line: #ffffff; --fail: #ff3030;
+  --ev-route: #c9a0ff; --ev-alert: #ff5a5a; --ev-rl: #ffd400;
+}
+
+/* Classic (PingPlotter-like) */
+:root[data-theme="classic"],
+.theme-preview[data-theme="classic"] {
+  color-scheme: light;
+  --bg: #e8ebef; --surface: #ffffff; --surface-2: #eef1f4; --border: #c9cfd6; --border-strong: #8f99a5;
+  --text: #1d252d; --text-muted: #4c5864; --text-faint: #8a94a0;
+  --accent: #18559b; --accent-fg: #ffffff;
+  --ok: #17601f; --warn: #7d4d00; --crit: #a81d17; --info: #18559b;
+  --lat-0: #3fae49;   --lat-1: #a5d150;   --lat-2: #ffe14a;
+  --lat-3: #ff9a2e;   --lat-4: #f0501e;
+  --loss-0: #c8283c; --loss-1: #6e0f1c;
+  --gap-hatch: #8f99a5; --gap-bg: #dfe3e8;
+  --chart-grid: #dde2e7; --chart-axis: #4c5864; --series-line: #18559b; --series-band: #18559b; --series-loss: #c8283c; --bar: #3fae49;
+  --ph-dns: #7b5cc4; --ph-tcp: #e8891c; --ph-tls: #d1478f; --ph-ttfb: #1c5fa8; --ph-transfer: #3fae49;
+  --tcp-line: #1d252d; --fail: #c8283c;
+  --ev-route: #7b5cc4; --ev-alert: #c8283c; --ev-rl: #8a5600;
+}

@@ -1,9 +1,10 @@
-// Overview: one card per target, status strip, DNS probes, add-target dialog.
+// Overview: one card per target, status strip, DNS probes, add/edit target.
 import { h, clear, isNum, fmtMs, fmtPct, fmtMos, fmtAgo, lsGet, lsSet, DASH, plural } from '../util.js';
 import { api, onStream, serverNow } from '../api.js';
 import { getStatus, onStatus } from '../store.js';
 import { statusPill, sparkline, panel, confirmDialog, metricClass } from '../ui.js';
 import { dnsPanel } from './dns.js';
+import { openTargetEditor } from './target-editor.js';
 
 const RANGES = ['1h', '6h', '24h'];
 
@@ -45,9 +46,11 @@ export function mount(root, ctx) {
     const hasHttp = (t.probes || []).some((p) => p.type === 'http');
     const sp = spark.get(t.id);
     const act = h('div', { class: 'actions' });
+    if (!t.removed) act.append(h('button', { class: 'btn sm', onclick: (e) => { e.stopPropagation(); openEdit(t); } }, 'Edit'));
     act.append(h('button', { class: 'btn sm', onclick: (e) => { e.stopPropagation(); togglePause(t); } }, paused ? 'Resume' : 'Pause'));
     if (t.source === 'ui') act.append(h('button', { class: 'btn sm danger', onclick: (e) => { e.stopPropagation(); removeTarget(t); } }, 'Delete'));
-    act.append(h('span', { class: 'src' }, t.source === 'ui' ? 'added in UI' : 'from config'));
+    act.append(h('span', { class: 'src', title: t.overridden ? 'Defined in the config file, with settings edited in the UI' : null },
+      t.source === 'ui' ? 'added in UI' : t.overridden ? 'config · edited in UI' : 'from config'));
     const e2e = sm.e2e_rtt_ms;
     return h('article', { class: 'card tcard' + (paused ? ' paused' : ''), dataset: { id: t.id } },
       h('div', { class: 'top' },
@@ -108,50 +111,8 @@ export function mount(root, ctx) {
     load();
   }
 
-  function openAddDialog() {
-    const err = h('div', { class: 'form-error', hidden: true, role: 'alert' });
-    const name = h('input', { type: 'text', name: 'name', required: true, maxlength: 64, placeholder: 'my-isp', autocomplete: 'off' });
-    const host = h('input', { type: 'text', name: 'host', required: true, placeholder: 'example.com or 203.0.113.7', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
-    const url = h('input', { type: 'text', name: 'http_url', placeholder: 'https://example.com/', autocomplete: 'off', inputmode: 'url' });
-    const port = h('input', { type: 'number', name: 'tcp_port', min: 1, max: 65535, placeholder: '443' });
-    const interval = h('input', { type: 'number', name: 'interval', min: 0.5, step: 0.5, placeholder: '2' });
-    const submit = h('button', { class: 'btn primary', type: 'submit' }, 'Add target');
-    const dlg = h('dialog', { 'aria-label': 'Add target' });
-    const form = h('form', { method: 'dialog', novalidate: true },
-      h('h3', null, 'Add target'), err,
-      h('div', { class: 'field' }, h('label', { for: 'at-name' }, 'Name'), name),
-      h('div', { class: 'field' }, h('label', { for: 'at-host' }, 'Host (hostname or IP)'), host),
-      h('div', { class: 'field' }, h('label', null, 'HTTP URL (optional)'), url, h('span', { class: 'hint' }, 'Adds an HTTP probe with DNS/TCP/TLS/TTFB phase timing.')),
-      h('div', { class: 'row' },
-        h('div', { class: 'field' }, h('label', null, 'TCP port (optional)'), port),
-        h('div', { class: 'field' }, h('label', null, 'Trace interval, seconds (optional)'), interval)),
-      h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', onclick: () => dlg.close() }, 'Cancel'), submit));
-    name.id = 'at-name'; host.id = 'at-host';
-    form.addEventListener('submit', async (ev) => {
-      ev.preventDefault();
-      err.hidden = true;
-      const body = { name: name.value.trim(), host: host.value.trim() };
-      if (!body.name) return showErr('Name is required.');
-      if (!body.host) return showErr('Host is required.');
-      if (url.value.trim()) body.http_url = url.value.trim();
-      if (port.value.trim()) body.tcp_port = Number(port.value);
-      if (interval.value.trim()) body.icmp_interval_ms = Math.round(Number(interval.value) * 1000);
-      submit.disabled = true;
-      try {
-        await api.createTarget(body);
-        dlg.close();
-        load();
-      } catch (e) {
-        showErr(e.message || 'Could not add the target.');
-      } finally { submit.disabled = false; }
-    });
-    function showErr(m) { err.textContent = m; err.hidden = false; }
-    dlg.append(form);
-    dlg.addEventListener('close', () => dlg.remove());
-    document.body.appendChild(dlg);
-    dlg.showModal();
-    name.focus();
-  }
+  function openAddDialog() { openTargetEditor({ onSaved: () => load() }); }
+  function openEdit(t) { openTargetEditor({ id: t.id, onSaved: () => load() }); }
 
   const offs = [
     onStatus(() => renderStrip()),

@@ -747,3 +747,50 @@ func TestProbeQueries(t *testing.T) {
 		t.Errorf("cert: %v %v", c, ok)
 	}
 }
+
+func TestUpdateTargetAndSettings(t *testing.T) {
+	s := openTest(t, nil)
+	a, _ := s.SyncConfigTarget("alpha", "a.example")
+	u, _ := s.CreateUITarget("beta", "b.example", `{"v":2}`)
+
+	// a config target keeps its UI override across syncs
+	if _, err := s.UpdateTarget(a.ID, "alpha", "192.0.2.1", `{"override":1}`); err != nil {
+		t.Fatal(err)
+	}
+	a2, err := s.SyncConfigTarget("alpha", "192.0.2.1")
+	if err != nil || a2.Spec != `{"override":1}` || a2.Source != "config" {
+		t.Fatalf("override lost on sync: %+v %v", a2, err)
+	}
+	if _, err := s.UpdateTarget(a.ID, "alpha", "a.example", ""); err != nil {
+		t.Fatal(err)
+	}
+	if a3, _ := s.Target(a.ID); a3.Spec != "" {
+		t.Errorf("override not cleared: %q", a3.Spec)
+	}
+
+	// renames keep the id; a clash is a duplicate
+	if _, err := s.UpdateTarget(u.ID, "ALPHA", "b.example", "{}"); !errors.Is(err, ErrDuplicate) {
+		t.Errorf("want ErrDuplicate, got %v", err)
+	}
+	r, err := s.UpdateTarget(u.ID, "Beta2", "2001:db8::1", `{"v":2,"x":1}`)
+	if err != nil || r.ID != u.ID || r.Name != "Beta2" || r.Host != "2001:db8::1" || r.Spec != `{"v":2,"x":1}` {
+		t.Fatalf("update: %+v %v", r, err)
+	}
+	if _, err := s.UpdateTarget(9999, "x", "x", ""); !errors.Is(err, ErrNotFound) {
+		t.Errorf("want ErrNotFound, got %v", err)
+	}
+
+	if err := s.SetSetting("defaults", `{"retries":1}`); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.SetSetting("defaults", `{"retries":2}`)
+	_ = s.SetSetting("status", `{}`)
+	m, err := s.Settings()
+	if err != nil || m["defaults"] != `{"retries":2}` || len(m) != 2 {
+		t.Fatalf("settings: %v %v", m, err)
+	}
+	_ = s.SetSetting("status", "")
+	if m, _ := s.Settings(); len(m) != 1 {
+		t.Errorf("delete: %v", m)
+	}
+}

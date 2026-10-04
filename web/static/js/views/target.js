@@ -6,6 +6,7 @@ import { statusPill, panel, alertPill, deliveryPill, metricClass } from '../ui.j
 import { Heatmap } from '../charts/heatmap.js';
 import { LatencyChart } from '../charts/latency.js';
 import { PhasesChart } from '../charts/phases.js';
+import { openTargetEditor } from './target-editor.js';
 
 export const RANGES = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3, '90d': 90 * 86400e3 };
 const REFRESH_MS = 7000;
@@ -25,7 +26,9 @@ export function mount(root, ctx) {
   const title = h('h1', null, 'Target');
   const hostLine = h('span', { class: 'sub muted' });
   const statusEl = h('span');
-  const head = h('div', { class: 'target-head' }, h('a', { class: 'btn sm', href: '#/' }, '← Overview'), targetSel, title, statusEl, hostLine);
+  const editBtn = h('button', { class: 'btn sm', type: 'button', hidden: true, title: 'Host, probes, intervals, timeouts, retries and alert thresholds',
+    onclick: () => openTargetEditor({ id, onSaved: () => refreshAll() }) }, 'Edit target');
+  const head = h('div', { class: 'target-head' }, h('a', { class: 'btn sm', href: '#/' }, '← Overview'), targetSel, title, statusEl, hostLine, editBtn);
 
   const rangeBtns = Object.keys(RANGES).map((k) => h('button', { type: 'button', class: 'btn sm', dataset: { range: k }, onclick: () => setRange(k) }, k));
   const customBtn = h('button', { type: 'button', class: 'btn sm', dataset: { range: 'custom' }, onclick: () => toggleCustom() }, 'Custom');
@@ -269,6 +272,7 @@ export function mount(root, ctx) {
     const t = D.target;
     clear(targetSel).append(...D.targets.map((x) => h('option', { value: x.id, selected: x.id === id }, x.name)));
     targetSel.value = String(id);
+    editBtn.hidden = !t || t.removed;
     if (!t) { title.textContent = 'Target #' + id; clear(statusEl); hostLine.textContent = ''; return; }
     title.textContent = t.name;
     document.title = t.name + ' · pathwatch';

@@ -1,10 +1,12 @@
-// Settings: theme picker, about/status, DNS probes.
+// Settings: server-side settings (probe defaults, status thresholds, alert rules, DNS probes),
+// theme picker, about/status, DNS probe results.
 import { h, clear, fmtDuration, fmtDateTime, DASH } from '../util.js';
 import { THEMES, getPref, setPref, onPrefChange } from '../theme.js';
 import { getStatus, onStatus, refreshStatus } from '../store.js';
 import { getSkew } from '../api.js';
 import { panel } from '../ui.js';
 import { dnsPanel } from './dns.js';
+import { settingsEditors } from './settings-editors.js';
 
 const ICMP_TEXT = {
   raw: 'Raw ICMP sockets (CAP_NET_RAW). Full per-hop tracing.',
@@ -15,8 +17,12 @@ const ICMP_TEXT = {
 export function mount(root) {
   const themeP = panel('Theme');
   const aboutP = panel('About this server');
-  const dns = dnsPanel({ title: 'DNS probes', range: '6h' });
-  root.append(h('div', { class: 'page-head' }, h('h1', null, 'Settings'), h('span', { class: 'sub' }, 'Stored in this browser only')), themeP.el, aboutP.el, dns.el);
+  const dns = dnsPanel({ title: 'DNS probe results', range: '6h' });
+  const editors = settingsEditors({ onSaved: () => { refreshStatus(); dns.load(); } });
+  root.append(
+    h('div', { class: 'page-head' }, h('h1', null, 'Settings'),
+      h('span', { class: 'sub' }, 'Monitoring settings are saved on the server and apply immediately; the theme is saved in this browser.')),
+    ...editors.els, dns.el, themeP.el, aboutP.el);
 
   function renderThemes() {
     const pref = getPref();
@@ -52,7 +58,7 @@ export function mount(root) {
     add('Local connectivity', s.local_status);
     add('Active alerts', String(s.active_alerts));
     add('Authentication', s.auth_enabled ? 'HTTP Basic auth enabled' : 'Disabled (loopback only)');
-    add('Config', s.read_only_config ? 'Read-only (targets from config file; UI targets can still be added)' : 'Writable');
+    add('Config', s.read_only_config ? 'Read-only (settings cannot be edited on this server)' : 'Config file, with settings edited in the UI layered on top');
     add('Server time', fmtDateTime(s.now));
     const skew = getSkew();
     if (Math.abs(skew) > 5000) add('Clock difference', h('span', { class: 'pill warn' }, `browser clock differs from the server by ${fmtDuration(Math.abs(skew))}`));
@@ -64,6 +70,7 @@ export function mount(root) {
   renderAbout(getStatus());
   const offs = [onPrefChange(renderThemes), onStatus(renderAbout)];
   refreshStatus();
+  editors.load();
   dns.load();
   const t = setInterval(() => dns.load(), 15000);
   return { destroy() { offs.forEach((f) => f()); clearInterval(t); } };

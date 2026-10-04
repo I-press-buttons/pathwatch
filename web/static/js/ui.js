@@ -1,5 +1,6 @@
 // Shared UI components: pills, panels, dialogs, sparklines.
 import { h, svg, clear, isNum, fmtMs, fmtPct, DASH } from './util.js';
+import { getStatus } from './store.js';
 
 export const STATUS = {
   ok: ['ok', 'OK'],
@@ -121,11 +122,22 @@ export function confirmDialog({ title, message, confirmLabel = 'Confirm', danger
   });
 }
 
+/**
+ * Colour class of a metric. Loss and HTTP success follow the server's status thresholds
+ * (Settings → Status thresholds): crit at the "degraded" level, warn on the way there.
+ */
 export function metricClass(kind, v) {
   if (!isNum(v)) return '';
-  if (kind === 'loss') return v >= 5 ? 'crit' : v >= 1 ? 'warn' : '';
+  const th = (getStatus() || {}).status_thresholds || {};
+  if (kind === 'loss') {
+    const crit = isNum(th.degraded_loss_pct) ? th.degraded_loss_pct : 5;
+    return v > crit ? 'crit' : v >= crit / 5 && v > 0 ? 'warn' : '';
+  }
   if (kind === 'mos') return v < 3.1 ? 'crit' : v < 3.8 ? 'warn' : '';
-  if (kind === 'success') return v < 90 ? 'crit' : v < 99.5 ? 'warn' : '';
+  if (kind === 'success') {
+    const crit = isNum(th.degraded_http_success_pct) ? th.degraded_http_success_pct : 95;
+    return v < crit ? 'crit' : v < (crit + 100) / 2 ? 'warn' : '';
+  }
   return '';
 }
 export { fmtMs, fmtPct, DASH };

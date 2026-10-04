@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -125,8 +126,8 @@ func (r *runner) rediscoveryInterval() time.Duration {
 	if r.spec.ICMP != nil && r.spec.ICMP.Rediscovery > 0 {
 		return r.spec.ICMP.Rediscovery
 	}
-	if r.s.opts.Defaults.PathRediscovery > 0 {
-		return r.s.opts.Defaults.PathRediscovery.D()
+	if d := r.s.defaults(); d.PathRediscovery > 0 {
+		return d.PathRediscovery.D()
 	}
 	return 5 * time.Minute
 }
@@ -222,7 +223,11 @@ func (r *runner) httpLoop(ctx context.Context, p config.Probe, ref ProbeRef) {
 			opts.Pin, opts.PinDNS = pn.Addr, pn.DNS
 			ip = pn.Addr.String()
 		}
-		res := probe.HTTPProbe(ctx, p, opts)
+		var res probe.HTTPResult
+		n := retrying(ctx, p.Retries, p.Timeout, p.Interval, ts, func() bool {
+			res = probe.HTTPProbe(ctx, p, opts)
+			return res.OK
+		})
 		if ctx.Err() != nil {
 			return
 		}
@@ -232,6 +237,7 @@ func (r *runner) httpLoop(ctx context.Context, p config.Probe, ref ProbeRef) {
 		if res.Err != nil {
 			smp.Error = res.Err.Error()
 		}
+		smp.Error = withAttempts(smp.Error, res.OK, n)
 		r.s.opts.Store.RecordHTTP(smp)
 		pe := ProbeEvent{TargetID: r.row.ID, ProbeID: ref.ID, Type: config.ProbeHTTP, TS: ts, OK: res.OK, TotalMS: ms(res.Total)}
 		pe.Sample = alert.ProbeSample{TargetID: r.row.ID, ProbeID: ref.ID, Type: config.ProbeHTTP, TS: ts, OK: res.OK, Error: smp.Error,
@@ -259,6 +265,7 @@ func (r *runner) tcpLoop(ctx context.Context, p config.Probe, ref ProbeRef) {
 		ts := time.Now().UTC()
 		smp := store.TCPSample{ProbeID: ref.ID, TS: ts}
 		var res probe.TCPResult
+		n := 1
 		if pn == nil {
 			r.mu.Lock()
 			msg := r.resolveErr
@@ -269,14 +276,17 @@ func (r *runner) tcpLoop(ctx context.Context, p config.Probe, ref ProbeRef) {
 			res.Err = errString("resolve: " + msg)
 		} else {
 			smp.ResolvedIP = pn.Addr.String()
-			res = probe.TCPConnect(ctx, pn.Addr, p.Port, p.Timeout)
+			n = retrying(ctx, p.Retries, p.Timeout, p.Interval, ts, func() bool {
+				res = probe.TCPConnect(ctx, pn.Addr, p.Port, p.Timeout)
+				return res.OK
+			})
 		}
 		if ctx.Err() != nil {
 			return
 		}
 		smp.Connect = res.Connect
 		if res.Err != nil {
-			smp.Error = res.Err.Error()
+			smp.Error = withAttempts(res.Err.Error(), res.OK, n)
 		}
 		r.s.opts.Store.RecordTCP(smp)
 		pe := ProbeEvent{TargetID: r.row.ID, ProbeID: ref.ID, Type: config.ProbeTCP, TS: ts, OK: res.OK, TotalMS: ms(res.Connect)}
@@ -288,6 +298,36 @@ func (r *runner) tcpLoop(ctx context.Context, p config.Probe, ref ProbeRef) {
 		case <-t.C:
 		}
 	}
+}
+
+// retryPause is the delay between a failed attempt and its retry.
+const retryPause = 250 * time.Millisecond
+
+// retrying runs attempt up to 1+retries times. It stops at the first success, when ctx ends,
+// or when another attempt (which may take up to timeout) could not finish before the probe is
+// due again (start + interval). It returns the number of attempts made.
+func retrying(ctx context.Context, retries int, timeout, interval time.Duration, start time.Time, attempt func() bool) int {
+	n := 0
+	for {
+		n++
+		if attempt() || n > retries || ctx.Err() != nil {
+			return n
+		}
+		if time.Since(start)+retryPause+timeout > interval {
+			return n
+		}
+		if !sleepCtx(ctx, retryPause) {
+			return n
+		}
+	}
+}
+
+// withAttempts notes the number of attempts in the error of a probe that failed after retries.
+func withAttempts(msg string, ok bool, attempts int) string {
+	if ok || msg == "" || attempts < 2 {
+		return msg
+	}
+	return fmt.Sprintf("%s (failed %d attempts)", msg, attempts)
 }
 
 type errString string

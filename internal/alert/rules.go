@@ -35,9 +35,11 @@ func newSettings(cfg *config.Config) *settings {
 	if s.clearRatio <= 0 || s.clearRatio >= 1 {
 		s.clearRatio = 0.7
 	}
-	for _, t := range cfg.Targets {
-		if len(t.Alerts.Disable) > 0 || len(t.Alerts.Override) > 0 {
-			s.targetRules[t.Name] = t.Alerts
+	for _, list := range [][]config.TargetConfig{cfg.Targets, cfg.UITargets} {
+		for _, t := range list {
+			if len(t.Alerts.Disable) > 0 || len(t.Alerts.Override) > 0 {
+				s.targetRules[t.Name] = t.Alerts
+			}
 		}
 	}
 	return s

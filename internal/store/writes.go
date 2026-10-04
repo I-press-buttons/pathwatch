@@ -309,7 +309,7 @@ type TargetRow struct {
 	Active    bool // false = removed from config
 	Paused    bool
 	Source    string // config | ui
-	Spec      string // JSON (ui targets)
+	Spec      string // JSON: a UI target's definition, or a config target's UI override ("" = none)
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -329,12 +329,13 @@ func scanTarget(sc interface{ Scan(...any) error }) (TargetRow, error) {
 }
 
 // SyncConfigTarget upserts a config-file target by name. A UI target with the same name is
-// taken over (the config wins). The paused flag is preserved.
+// taken over (the config wins, and the UI definition is dropped). The paused flag and a config
+// target's UI override (spec) are preserved.
 func (s *Store) SyncConfigTarget(name, host string) (TargetRow, error) {
 	var out TargetRow
 	err := s.exec(func(tx *sql.Tx) error {
 		now := us(s.now())
-		res, err := tx.Exec(`UPDATE targets SET host=?, active=1, source='config', spec=NULL, updated_at=? WHERE name=?`, host, now, name)
+		res, err := tx.Exec(`UPDATE targets SET host=?, active=1, spec=CASE WHEN source='ui' THEN NULL ELSE spec END, source='config', updated_at=? WHERE name=?`, host, now, name)
 		if err != nil {
 			return err
 		}
@@ -403,6 +404,66 @@ func (s *Store) CreateUITarget(name, host, spec string) (TargetRow, error) {
 		return err
 	})
 	return out, err
+}
+
+// UpdateTarget changes the name, host and stored definition (spec, "" = none) of a target. It
+// returns ErrDuplicate if another target already has the name, ErrNotFound if id is unknown.
+func (s *Store) UpdateTarget(id int64, name, host, spec string) (TargetRow, error) {
+	var out TargetRow
+	err := s.exec(func(tx *sql.Tx) error {
+		var n int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM targets WHERE name=? AND id<>?`, name, id).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			return ErrDuplicate
+		}
+		var sp any
+		if spec != "" {
+			sp = spec
+		}
+		res, err := tx.Exec(`UPDATE targets SET name=?, host=?, spec=?, updated_at=? WHERE id=?`, name, host, sp, us(s.now()), id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		out, err = scanTarget(tx.QueryRow(`SELECT `+targetCols+` FROM targets WHERE id=?`, id))
+		return err
+	})
+	return out, err
+}
+
+// Settings returns the settings edited in the web UI (key -> JSON).
+func (s *Store) Settings() (map[string]string, error) {
+	rows, err := s.rdb.Query(`SELECT key, value FROM settings`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
+}
+
+// SetSetting stores a setting; an empty value deletes it.
+func (s *Store) SetSetting(key, value string) error {
+	return s.exec(func(tx *sql.Tx) error {
+		if value == "" {
+			_, err := tx.Exec(`DELETE FROM settings WHERE key=?`, key)
+			return err
+		}
+		_, err := tx.Exec(`INSERT INTO settings(key, value, updated_at) VALUES (?,?,?)
+			ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`, key, value, us(s.now()))
+		return err
+	})
 }
 
 // SetTargetPaused changes the paused flag of a target.

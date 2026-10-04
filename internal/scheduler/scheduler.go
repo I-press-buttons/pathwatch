@@ -5,7 +5,6 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -221,7 +220,7 @@ func (s *Scheduler) register(row store.TargetRow, spec config.Target) error {
 	}
 	old := s.entries[row.ID]
 	if old != nil && old.run != nil {
-		if reflect.DeepEqual(old.spec, spec) && !row.Paused && old.row.Host == row.Host {
+		if reflect.DeepEqual(old.spec, spec) && !row.Paused && old.row.Host == row.Host && old.row.Name == row.Name {
 			old.row = row
 			return nil // unchanged and running
 		}
@@ -329,8 +328,9 @@ func (s *Scheduler) syncDNS(list []config.DNSProbe) error {
 	return nil
 }
 
-// LoadUITargets starts runners for the UI-managed targets stored in the database.
-func (s *Scheduler) LoadUITargets() error {
+// LoadUITargets starts runners for the UI-managed targets stored in the database. resolve
+// turns a stored row (its spec) into the target to run; rows it fails on are logged and skipped.
+func (s *Scheduler) LoadUITargets(resolve func(store.TargetRow) (config.Target, error)) error {
 	rows, err := s.opts.Store.Targets(false)
 	if err != nil {
 		return err
@@ -339,9 +339,9 @@ func (s *Scheduler) LoadUITargets() error {
 		if row.Source != config.SourceUI {
 			continue
 		}
-		var spec config.Target
-		if err := json.Unmarshal([]byte(row.Spec), &spec); err != nil {
-			s.log.Error("ignoring UI target with unreadable spec", "target", row.Name, "err", err)
+		spec, err := resolve(row)
+		if err != nil {
+			s.log.Error("ignoring UI target with an invalid definition", "target", row.Name, "err", err)
 			continue
 		}
 		spec.Name, spec.Host, spec.Source = row.Name, row.Host, config.SourceUI
@@ -349,18 +349,15 @@ func (s *Scheduler) LoadUITargets() error {
 			s.log.Error("cannot start UI target", "target", row.Name, "err", err)
 		}
 	}
+	s.obs.TargetsChanged()
 	return nil
 }
 
-// AddUITarget stores and starts a UI-managed target. store.ErrDuplicate is returned for an
-// existing name.
-func (s *Scheduler) AddUITarget(t config.Target) (store.TargetRow, error) {
+// AddUITarget stores and starts a UI-managed target with its stored definition (spec).
+// store.ErrDuplicate is returned for an existing name.
+func (s *Scheduler) AddUITarget(t config.Target, spec string) (store.TargetRow, error) {
 	t.Source = config.SourceUI
-	spec, err := json.Marshal(t)
-	if err != nil {
-		return store.TargetRow{}, err
-	}
-	row, err := s.opts.Store.CreateUITarget(t.Name, t.Host, string(spec))
+	row, err := s.opts.Store.CreateUITarget(t.Name, t.Host, spec)
 	if err != nil {
 		return row, err
 	}
@@ -369,6 +366,31 @@ func (s *Scheduler) AddUITarget(t config.Target) (store.TargetRow, error) {
 	}
 	s.obs.TargetsChanged()
 	return row, nil
+}
+
+// ApplyTarget runs a stored target with a new resolved definition. The runner restarts only
+// when something changed (new probes start with their own history; probes whose identity is
+// unchanged keep theirs).
+func (s *Scheduler) ApplyTarget(row store.TargetRow, t config.Target) error {
+	t.Name, t.Host, t.Source = row.Name, row.Host, row.Source
+	if err := s.register(row, t); err != nil {
+		return err
+	}
+	s.obs.TargetsChanged()
+	return nil
+}
+
+// SetDefaults replaces the defaults (used where a target has no setting of its own).
+func (s *Scheduler) SetDefaults(d config.Defaults) {
+	s.mu.Lock()
+	s.opts.Defaults = d
+	s.mu.Unlock()
+}
+
+func (s *Scheduler) defaults() config.Defaults {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.opts.Defaults
 }
 
 // RemoveTarget stops a UI target and deletes it with its data. Config targets cannot be removed.
@@ -600,13 +622,17 @@ func (s *Scheduler) dnsLoop(ctx context.Context, e *dnsEntry) {
 	defer t.Stop()
 	for {
 		start := time.Now().UTC()
-		res := probe.DNSQuery(ctx, e.spec.Server, e.spec.Query, e.spec.Record, e.spec.Timeout)
+		var res probe.DNSResult
+		n := retrying(ctx, e.spec.Retries, e.spec.Timeout, e.spec.Interval, start, func() bool {
+			res = probe.DNSQuery(ctx, e.spec.Server, e.spec.Query, e.spec.Record, e.spec.Timeout)
+			return res.OK
+		})
 		if ctx.Err() != nil {
 			return
 		}
 		smp := store.DNSSample{ProbeID: e.ref.ID, TS: start, RCode: res.RCode, RTT: res.RTT}
 		if res.Err != nil {
-			smp.Error = res.Err.Error()
+			smp.Error = withAttempts(res.Err.Error(), res.OK, n)
 		}
 		s.opts.Store.RecordDNS(smp)
 		pe := ProbeEvent{ProbeID: e.ref.ID, Type: config.ProbeDNS, TS: start, OK: res.OK, TotalMS: float64(res.RTT) / float64(time.Millisecond)}

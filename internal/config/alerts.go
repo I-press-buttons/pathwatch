@@ -20,21 +20,21 @@ type AlertsConfig struct {
 
 // RuleConfig is one global alert rule. Only the parameters relevant to Type are used.
 type RuleConfig struct {
-	Name    string   `yaml:"name"`
-	Type    string   `yaml:"type"`
-	Enabled *bool    `yaml:"enabled"`
-	Notify  []string `yaml:"notify"`
+	Name    string   `yaml:"name" json:"name"`
+	Type    string   `yaml:"type" json:"type"`
+	Enabled *bool    `yaml:"enabled" json:"enabled,omitempty"`
+	Notify  []string `yaml:"notify" json:"notify,omitempty"`
 
-	Consecutive    int      `yaml:"consecutive"`
-	Metric         string   `yaml:"metric"`
-	BaselineWindow Duration `yaml:"baseline_window"`
-	MinBaseline    Duration `yaml:"min_baseline"`
-	Multiplier     float64  `yaml:"multiplier"`
-	MinDelta       Duration `yaml:"min_delta"`
-	Sustain        Duration `yaml:"sustain"`
-	ThresholdPct   float64  `yaml:"threshold_pct"`
-	Window         Duration `yaml:"window"`
-	WarnBefore     Duration `yaml:"warn_before"`
+	Consecutive    int      `yaml:"consecutive" json:"consecutive,omitempty"`
+	Metric         string   `yaml:"metric" json:"metric,omitempty"`
+	BaselineWindow Duration `yaml:"baseline_window" json:"baseline_window_ms,omitempty"`
+	MinBaseline    Duration `yaml:"min_baseline" json:"min_baseline_ms,omitempty"`
+	Multiplier     float64  `yaml:"multiplier" json:"multiplier,omitempty"`
+	MinDelta       Duration `yaml:"min_delta" json:"min_delta_ms,omitempty"`
+	Sustain        Duration `yaml:"sustain" json:"sustain_ms,omitempty"`
+	ThresholdPct   float64  `yaml:"threshold_pct" json:"threshold_pct,omitempty"`
+	Window         Duration `yaml:"window" json:"window_ms,omitempty"`
+	WarnBefore     Duration `yaml:"warn_before" json:"warn_before_ms,omitempty"`
 }
 
 // IsEnabled reports whether the rule is enabled (default true).
@@ -42,17 +42,20 @@ func (r RuleConfig) IsEnabled() bool { return r.Enabled == nil || *r.Enabled }
 
 // RuleOverride is a per-target override of rule parameters (pointer = "set").
 type RuleOverride struct {
-	Consecutive    *int      `yaml:"consecutive"`
-	Metric         *string   `yaml:"metric"`
-	BaselineWindow *Duration `yaml:"baseline_window"`
-	MinBaseline    *Duration `yaml:"min_baseline"`
-	Multiplier     *float64  `yaml:"multiplier"`
-	MinDelta       *Duration `yaml:"min_delta"`
-	Sustain        *Duration `yaml:"sustain"`
-	ThresholdPct   *float64  `yaml:"threshold_pct"`
-	Window         *Duration `yaml:"window"`
-	WarnBefore     *Duration `yaml:"warn_before"`
+	Consecutive    *int      `yaml:"consecutive" json:"consecutive,omitempty"`
+	Metric         *string   `yaml:"metric" json:"metric,omitempty"`
+	BaselineWindow *Duration `yaml:"baseline_window" json:"baseline_window_ms,omitempty"`
+	MinBaseline    *Duration `yaml:"min_baseline" json:"min_baseline_ms,omitempty"`
+	Multiplier     *float64  `yaml:"multiplier" json:"multiplier,omitempty"`
+	MinDelta       *Duration `yaml:"min_delta" json:"min_delta_ms,omitempty"`
+	Sustain        *Duration `yaml:"sustain" json:"sustain_ms,omitempty"`
+	ThresholdPct   *float64  `yaml:"threshold_pct" json:"threshold_pct,omitempty"`
+	Window         *Duration `yaml:"window" json:"window_ms,omitempty"`
+	WarnBefore     *Duration `yaml:"warn_before" json:"warn_before_ms,omitempty"`
 }
+
+// IsZero reports whether the override sets nothing.
+func (o RuleOverride) IsZero() bool { return o == RuleOverride{} }
 
 // Apply returns r with the override's set fields applied.
 func (o RuleOverride) Apply(r RuleConfig) RuleConfig {
@@ -92,8 +95,22 @@ func (o RuleOverride) Apply(r RuleConfig) RuleConfig {
 // TargetAlerts disables or overrides rules for one target. Keys and list entries
 // may be rule names or rule types.
 type TargetAlerts struct {
-	Disable  []string                `yaml:"disable"`
-	Override map[string]RuleOverride `yaml:"override"`
+	Disable  []string                `yaml:"disable" json:"disable,omitempty"`
+	Override map[string]RuleOverride `yaml:"override" json:"override,omitempty"`
+}
+
+// AlertSettings is the part of the alerts section that can be edited in the web UI: the rules,
+// their thresholds, and the noise control. Channels (which involve secrets from the
+// environment), maintenance windows, the heartbeat and the outbox stay in the config file.
+type AlertSettings struct {
+	Rules      []RuleConfig `json:"rules"`
+	Cooldown   Duration     `json:"cooldown_ms"`
+	ClearRatio float64      `json:"clear_ratio"`
+}
+
+// Settings returns the UI-editable part of the alerts section.
+func (a AlertsConfig) Settings() AlertSettings {
+	return AlertSettings{Rules: append([]RuleConfig{}, a.Rules...), Cooldown: a.Cooldown, ClearRatio: a.ClearRatio}
 }
 
 // MaintenanceWindow is a recurring silence defined in config.

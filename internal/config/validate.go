@@ -64,6 +64,26 @@ func (c *Config) Validate() error {
 	if df.MaxHops < 1 || df.MaxHops > 64 {
 		add("defaults.max_hops must be between 1 and 64")
 	}
+	if df.Retries < 0 || df.Retries > MaxRetries {
+		add("defaults.retries must be between 0 and %d", MaxRetries)
+	}
+	if df.ICMPInterval.D() > 0 && df.ICMPInterval.D() < 500*time.Millisecond {
+		add("defaults.icmp_interval %v is too small (minimum 500ms)", df.ICMPInterval.D())
+	}
+	for name, d := range map[string]Duration{"tcp_interval": df.TCPInterval, "http_interval": df.HTTPInterval, "dns_interval": df.DNSInterval} {
+		if d.D() > 0 && d.D() < time.Second {
+			add("defaults.%s %v is too small (minimum 1s)", name, d.D())
+		}
+	}
+	if df.PathRediscovery.D() > 0 && df.PathRediscovery.D() < 10*time.Second {
+		add("defaults.path_rediscovery %v is too small (minimum 10s)", df.PathRediscovery.D())
+	}
+	if v := c.Status.DegradedLossPct; v <= 0 || v > 100 {
+		add("status.degraded_loss_pct must be in (0, 100]")
+	}
+	if v := c.Status.DegradedHTTPSuccessPct; v <= 0 || v > 100 {
+		add("status.degraded_http_success_pct must be in (0, 100]")
+	}
 	for name, d := range map[string]Duration{
 		"icmp_interval": df.ICMPInterval, "icmp_timeout": df.ICMPTimeout, "tcp_interval": df.TCPInterval,
 		"tcp_timeout": df.TCPTimeout, "http_interval": df.HTTPInterval, "http_timeout": df.HTTPTimeout,
@@ -99,6 +119,18 @@ func (c *Config) Validate() error {
 		for k := range tc.Alerts.Override {
 			if !ruleKeys[k] {
 				add("targets[%d] (%s): alerts.override references unknown rule %q", i, tc.Name, k)
+			}
+		}
+	}
+	for _, tc := range c.UITargets {
+		for _, d := range tc.Alerts.Disable {
+			if !ruleKeys[d] {
+				add("target %q: alert settings disable unknown rule %q", tc.Name, d)
+			}
+		}
+		for k := range tc.Alerts.Override {
+			if !ruleKeys[k] {
+				add("target %q: alert settings override unknown rule %q", tc.Name, k)
 			}
 		}
 	}

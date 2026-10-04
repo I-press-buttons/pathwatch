@@ -49,6 +49,7 @@ func (s *Store) RecordRound(r Round) {
 // RecordHTTP stores one HTTP sample.
 func (s *Store) RecordHTTP(h HTTPSample) {
 	s.agg.AddHTTP(h)
+	s.noteCert(h)
 	s.enqueue(func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT OR REPLACE INTO http_samples(probe_id, ts, resolved_ip, status, dns_us, connect_us, tls_us, ttfb_us, transfer_us, total_us, redirects, cert_not_after, error)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -504,6 +505,7 @@ func (s *Store) DeleteTarget(id int64) error {
 			probeIDs = append(probeIDs, p)
 		}
 		rows.Close()
+		s.forgetCerts(probeIDs...) // ids can be reused; EnsureProbe forgets again for a new probe
 		for _, p := range probeIDs {
 			for _, t := range []string{"http_samples", "tcp_samples", "dns_samples", "probe_rollup_1m", "probe_rollup_1h"} {
 				if _, err := tx.Exec(`DELETE FROM `+t+` WHERE probe_id=?`, p); err != nil {
@@ -546,6 +548,7 @@ func (s *Store) EnsureProbe(targetID int64, typ, key, label string) (int64, erro
 				return err
 			}
 			id, _ = res.LastInsertId()
+			s.forgetCerts(id) // the id may have belonged to a deleted probe
 			return nil
 		}
 		if err != nil {

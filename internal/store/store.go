@@ -68,6 +68,10 @@ type Store struct {
 	subs  []func(MinuteBatch)
 
 	pathMu sync.Mutex // guards destTTL cache
+
+	certMu  sync.Mutex // guards the newest-certificate cache (certcache.go)
+	certs   map[int64]certEntry
+	certGen uint64 // bumped whenever entries are forgotten, so an in-flight lookup cannot resurrect one
 }
 
 // Open opens (creating if needed) the database at path, applies migrations and starts the
@@ -136,6 +140,7 @@ func Open(path string, o Options) (*Store, error) {
 		retCancel: retCancel,
 		retdone:   make(chan struct{}),
 		agg:       NewAggregator(),
+		certs:     make(map[int64]certEntry),
 	}
 	s.lastWrit.Store(time.Now().UnixNano())
 	go s.writer()

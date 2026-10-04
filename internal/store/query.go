@@ -454,17 +454,10 @@ func (pc *ProbeCells) Total() *ProbeRoll {
 	return t
 }
 
-// LatestCert returns the newest certificate expiry recorded for an HTTP probe.
+// LatestCert returns the newest certificate expiry recorded for an HTTP probe. It is answered
+// from an in-memory cache that RecordHTTP keeps current; the database is read once per probe.
 func (s *Store) LatestCert(probeID int64) (time.Time, bool) {
-	var v sql.NullInt64
-	_ = s.rdb.QueryRow(`SELECT cert_not_after FROM http_samples WHERE probe_id=? AND cert_not_after IS NOT NULL ORDER BY ts DESC LIMIT 1`, probeID).Scan(&v)
-	if !v.Valid {
-		_ = s.rdb.QueryRow(`SELECT cert_not_after FROM probe_rollup_1m WHERE probe_id=? AND cert_not_after IS NOT NULL ORDER BY bucket DESC LIMIT 1`, probeID).Scan(&v)
-	}
-	if !v.Valid {
-		return time.Time{}, false
-	}
-	return fromUs(v.Int64), true
+	return s.latestCert(probeID)
 }
 
 // LastRounds returns up to n of the newest rounds of a target (newest last).

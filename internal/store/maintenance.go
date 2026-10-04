@@ -4,32 +4,66 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"time"
 )
 
-// Retain deletes expired raw and rollup data (in chunks, interleaved with normal writes) and
-// then returns freed pages to the filesystem with an incremental vacuum.
-func (s *Store) Retain(ctx context.Context) error {
-	now := s.now()
-	type job struct {
-		table, pk, col string
-		cutoff         time.Time
-	}
-	var jobs []job
+// retainChunk is the most rows one retention delete removes, so the writer is never held for
+// long and normal writes interleave with a big expiry run.
+const retainChunk = 5000
+
+// retainJob is one table to expire: rows with col < cutoff go. col is the second primary-key
+// column (after key) of every table below, so expiry works key by key with a primary-key range
+// instead of scanning the table from its start.
+type retainJob struct {
+	table, key, pk, col string
+	cutoff              time.Time
+}
+
+// nextKeySQL finds the smallest key above ? with one index seek.
+func (j retainJob) nextKeySQL() string {
+	return fmt.Sprintf(`SELECT MIN(%[2]s) FROM %[1]s WHERE %[2]s > ?`, j.table, j.key)
+}
+
+// deleteSQL removes up to retainChunk expired rows of one key (args: key, cutoff).
+func (j retainJob) deleteSQL() string {
+	return fmt.Sprintf(`DELETE FROM %[1]s WHERE (%[3]s) IN (SELECT %[3]s FROM %[1]s WHERE %[2]s=? AND %[4]s<? LIMIT %[5]d)`, j.table, j.key, j.pk, j.col, retainChunk)
+}
+
+// retainJobs lists the tables to expire for the configured retention periods.
+func (s *Store) retainJobs(now time.Time) []retainJob {
+	var jobs []retainJob
 	if d := s.opts.RawRetention; d > 0 {
 		c := now.Add(-d)
 		jobs = append(jobs,
-			job{"icmp_rounds", "target_id, ts", "ts", c},
-			job{"http_samples", "probe_id, ts", "ts", c},
-			job{"tcp_samples", "probe_id, ts", "ts", c},
-			job{"dns_samples", "probe_id, ts", "ts", c})
+			retainJob{"icmp_rounds", "target_id", "target_id, ts", "ts", c},
+			retainJob{"http_samples", "probe_id", "probe_id, ts", "ts", c},
+			retainJob{"tcp_samples", "probe_id", "probe_id, ts", "ts", c},
+			retainJob{"dns_samples", "probe_id", "probe_id, ts", "ts", c})
 	}
 	if d := s.opts.Rollup1mRetention; d > 0 {
 		c := now.Add(-d)
 		jobs = append(jobs,
-			job{"icmp_rollup_1m", "target_id, bucket, ttl, path_id", "bucket", c},
-			job{"probe_rollup_1m", "probe_id, bucket", "bucket", c})
+			retainJob{"icmp_rollup_1m", "target_id", "target_id, bucket, ttl, path_id", "bucket", c},
+			retainJob{"probe_rollup_1m", "probe_id", "probe_id, bucket", "bucket", c})
+	}
+	if d := s.opts.Rollup1hRetention; d > 0 {
+		c := now.Add(-d)
+		jobs = append(jobs,
+			retainJob{"icmp_rollup_1h", "target_id", "target_id, bucket, ttl, path_id", "bucket", c},
+			retainJob{"probe_rollup_1h", "probe_id", "probe_id, bucket", "bucket", c})
+	}
+	return jobs
+}
+
+// Retain deletes expired raw and rollup data (in chunks, interleaved with normal writes) and
+// then returns freed pages to the filesystem with an incremental vacuum. It stops between
+// chunks once ctx is cancelled.
+func (s *Store) Retain(ctx context.Context) error {
+	now := s.now()
+	if d := s.opts.Rollup1mRetention; d > 0 {
 		// annotations follow the 1m retention
+		c := now.Add(-d)
 		if _, err := s.deleteWhere(ctx, `DELETE FROM events WHERE COALESCE(ended_at, started_at) < ? AND (ended_at IS NOT NULL OR kind = 'route_change')`, us(c)); err != nil {
 			return err
 		}
@@ -37,24 +71,12 @@ func (s *Store) Retain(ctx context.Context) error {
 			return err
 		}
 	}
-	if d := s.opts.Rollup1hRetention; d > 0 {
-		c := now.Add(-d)
-		jobs = append(jobs,
-			job{"icmp_rollup_1h", "target_id, bucket, ttl, path_id", "bucket", c},
-			job{"probe_rollup_1h", "probe_id, bucket", "bucket", c})
-	}
 	var total int64
-	for _, j := range jobs {
-		q := fmt.Sprintf(`DELETE FROM %[1]s WHERE (%[2]s) IN (SELECT %[2]s FROM %[1]s WHERE %[3]s < ? LIMIT 5000)`, j.table, j.pk, j.col)
-		for {
-			n, err := s.deleteWhere(ctx, q, us(j.cutoff))
-			if err != nil {
-				return err
-			}
-			total += n
-			if n < 5000 {
-				break
-			}
+	for _, j := range s.retainJobs(now) {
+		n, err := s.expire(ctx, j)
+		total += n
+		if err != nil {
+			return err
 		}
 	}
 	if total > 0 {
@@ -64,6 +86,37 @@ func (s *Store) Retain(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// expire deletes j's expired rows and returns how many it removed. It walks the keys actually
+// present in the table (not the targets/probes tables) so rows orphaned by a deleted target
+// are cleaned up too; each step is an index seek, and so is each chunk's primary-key range.
+func (s *Store) expire(ctx context.Context, j retainJob) (int64, error) {
+	var total int64
+	after := int64(math.MinInt64)
+	for {
+		var k sql.NullInt64
+		if err := s.rdb.QueryRowContext(ctx, j.nextKeySQL(), after).Scan(&k); err != nil {
+			return total, err
+		}
+		if !k.Valid {
+			return total, nil
+		}
+		for {
+			if err := ctx.Err(); err != nil {
+				return total, err
+			}
+			n, err := s.deleteWhere(ctx, j.deleteSQL(), k.Int64, us(j.cutoff))
+			total += n
+			if err != nil {
+				return total, err
+			}
+			if n < retainChunk {
+				break
+			}
+		}
+		after = k.Int64
+	}
 }
 
 func (s *Store) deleteWhere(ctx context.Context, q string, args ...any) (int64, error) {

@@ -295,6 +295,14 @@ func TestStaticRange(t *testing.T) {
 	if w := staticDo(h, "GET", "/app.js", "Range", "bytes=99999999-"); w.Code != http.StatusRequestedRangeNotSatisfiable {
 		t.Errorf("unsatisfiable range: %d", w.Code)
 	}
+	// a range of the gzip variant is a range of the compressed bytes, with a matching length
+	w = staticDo(h, "GET", "/app.js", "Range", "bytes=0-6", "Accept-Encoding", "gzip")
+	if w.Code != http.StatusPartialContent || w.Header().Get("Content-Encoding") != "gzip" || w.Body.Len() != 7 {
+		t.Fatalf("gzip range: %d, %d bytes, %v", w.Code, w.Body.Len(), w.Header())
+	}
+	if cl := w.Header().Get("Content-Length"); cl != "7" {
+		t.Errorf("gzip range Content-Length %q", cl)
+	}
 }
 
 func TestStaticOverRealConnection(t *testing.T) {

@@ -11,7 +11,7 @@ export const THEMES = [
   { id: 'solarized-light', name: 'Solarized Light', desc: 'Warm paper tones' },
   { id: 'solarized-dark', name: 'Solarized Dark', desc: 'Deep teal, low glare' },
   { id: 'high-contrast', name: 'High Contrast', desc: 'Maximum contrast, black and white' },
-  { id: 'classic', name: 'Classic', desc: 'PingPlotter-like green, yellow, red scale on a light UI' },
+  { id: 'classic', name: 'Classic', desc: 'Green, yellow, red scale on a light UI' },
 ];
 const KEY = 'pathwatch.theme';
 const listeners = new Set();

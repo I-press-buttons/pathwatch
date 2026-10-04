@@ -66,7 +66,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
           labels: |
             org.opencontainers.image.title=pathwatch
-            org.opencontainers.image.description=Self-hosted PingPlotter-style network path monitor
+            org.opencontainers.image.description=Self-hosted network path analysis and monitoring tool
             org.opencontainers.image.licenses=MIT
 
       - name: Build and push

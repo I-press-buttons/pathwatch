@@ -40,8 +40,7 @@ func (s *Store) RecordRound(r Round) {
 	blob := EncodeHops(r.Hops)
 	n := len(r.Hops)
 	s.enqueue(func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT OR REPLACE INTO icmp_rounds(target_id, ts, path_id, hop_count, results) VALUES (?,?,?,?,?)`,
-			r.TargetID, us(r.TS), r.PathID, n, blob)
+		_, err := s.stmts.exec(tx, sqlInsertRound, r.TargetID, us(r.TS), r.PathID, n, blob)
 		return err
 	})
 }
@@ -51,8 +50,7 @@ func (s *Store) RecordHTTP(h HTTPSample) {
 	s.agg.AddHTTP(h)
 	s.noteCert(h)
 	s.enqueue(func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT OR REPLACE INTO http_samples(probe_id, ts, resolved_ip, status, dns_us, connect_us, tls_us, ttfb_us, transfer_us, total_us, redirects, cert_not_after, error)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		_, err := s.stmts.exec(tx, sqlInsertHTTP,
 			h.ProbeID, us(h.TS), nullStr(h.ResolvedIP), h.Status, h.DNS.Microseconds(), h.Connect.Microseconds(), h.TLS.Microseconds(),
 			h.TTFB.Microseconds(), h.Transfer.Microseconds(), h.Total.Microseconds(), h.Redirects, nullTime(h.CertNotAfter), nullStr(h.Error))
 		return err
@@ -63,7 +61,7 @@ func (s *Store) RecordHTTP(h HTTPSample) {
 func (s *Store) RecordTCP(t TCPSample) {
 	s.agg.AddTCP(t)
 	s.enqueue(func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT OR REPLACE INTO tcp_samples(probe_id, ts, resolved_ip, connect_us, error) VALUES (?,?,?,?,?)`,
+		_, err := s.stmts.exec(tx, sqlInsertTCP,
 			t.ProbeID, us(t.TS), nullStr(t.ResolvedIP), t.Connect.Microseconds(), nullStr(t.Error))
 		return err
 	})
@@ -73,7 +71,7 @@ func (s *Store) RecordTCP(t TCPSample) {
 func (s *Store) RecordDNS(d DNSSample) {
 	s.agg.AddDNS(d)
 	s.enqueue(func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT OR REPLACE INTO dns_samples(probe_id, ts, rcode, rtt_us, error) VALUES (?,?,?,?,?)`,
+		_, err := s.stmts.exec(tx, sqlInsertDNS,
 			d.ProbeID, us(d.TS), d.RCode, d.RTT.Microseconds(), nullStr(d.Error))
 		return err
 	})
@@ -94,9 +92,18 @@ func (s *Store) RecordGap(targetID int64, from, to time.Time, reason string) {
 }
 
 // ---------------------------------------------------------------------------
-// rollups
+// writer statements
 
+// The hot, repeated statements. database/sql does not cache prepared statements, so a plain
+// tx.Exec parses its SQL every time; stmtCache prepares these once on the writer DB.
 const (
+	sqlInsertRound     = `INSERT OR REPLACE INTO icmp_rounds(target_id, ts, path_id, hop_count, results) VALUES (?,?,?,?,?)`
+	sqlInsertHTTP      = `INSERT OR REPLACE INTO http_samples(probe_id, ts, resolved_ip, status, dns_us, connect_us, tls_us, ttfb_us, transfer_us, total_us, redirects, cert_not_after, error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+	sqlInsertTCP       = `INSERT OR REPLACE INTO tcp_samples(probe_id, ts, resolved_ip, connect_us, error) VALUES (?,?,?,?,?)`
+	sqlInsertDNS       = `INSERT OR REPLACE INTO dns_samples(probe_id, ts, rcode, rtt_us, error) VALUES (?,?,?,?,?)`
+	sqlInsertPathHop   = `INSERT OR REPLACE INTO path_hops(path_id, ttl, idx, address, share) VALUES (?,?,?,?,COALESCE((SELECT share FROM path_hops WHERE path_id=? AND ttl=? AND idx=?),1))`
+	sqlUpdatePathShare = `UPDATE path_hops SET share=? WHERE path_id=? AND ttl=? AND idx=?`
+
 	sqlInsertICMP1m  = `INSERT OR REPLACE INTO icmp_rollup_1m(target_id, bucket, ttl, path_id, n, lost, rtt_min, rtt_avg, rtt_max, jitter, hist) VALUES (?,?,?,?,?,?,?,?,?,?,?)`
 	sqlInsertICMP1h  = `INSERT OR REPLACE INTO icmp_rollup_1h(target_id, bucket, ttl, path_id, n, lost, rtt_min, rtt_avg, rtt_max, jitter, hist) VALUES (?,?,?,?,?,?,?,?,?,?,?)`
 	sqlInsertProbe1m = `INSERT OR REPLACE INTO probe_rollup_1m(probe_id, bucket, n, errors, dns_avg, connect_avg, tls_avg, ttfb_avg, transfer_avg, total_min, total_avg, total_max, hist, cert_not_after) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
@@ -106,6 +113,82 @@ const (
 	sqlICMPHourRows  = `SELECT bucket, ttl, path_id, n, lost, rtt_min, rtt_avg, rtt_max, jitter, hist FROM icmp_rollup_1m WHERE target_id=? AND bucket >= ? AND bucket < ?`
 	sqlProbeHourRows = `SELECT bucket, n, errors, dns_avg, connect_avg, tls_avg, ttfb_avg, transfer_avg, total_min, total_avg, total_max, hist, cert_not_after FROM probe_rollup_1m WHERE probe_id=? AND bucket >= ? AND bucket < ? ORDER BY bucket`
 )
+
+var writerSQL = []string{
+	sqlInsertRound, sqlInsertHTTP, sqlInsertTCP, sqlInsertDNS, sqlInsertPathHop, sqlUpdatePathShare,
+	sqlInsertICMP1m, sqlInsertICMP1h, sqlInsertProbe1m, sqlInsertProbe1h, sqlICMPHourRows, sqlProbeHourRows,
+}
+
+// stmtCache holds the writer connection's prepared statements. A statement prepared on the
+// DB and bound to a transaction with tx.Stmt reuses the driver statement of the same
+// connection, which the writer DB has exactly one of. Used only by the writer goroutine.
+type stmtCache struct {
+	m     map[string]*sql.Stmt // prepared on the DB
+	tx    *sql.Tx              // the transaction bound holds statements for
+	bound map[string]*sql.Stmt // m's statements bound to tx
+}
+
+// prepare prepares the writer statements once. It must run outside a transaction: the
+// single writer connection is held by the transaction, so a Prepare inside one would wait forever.
+func (c *stmtCache) prepare(db *sql.DB) {
+	if c.m != nil {
+		return
+	}
+	c.m = make(map[string]*sql.Stmt, len(writerSQL))
+	for _, q := range writerSQL {
+		if st, err := db.Prepare(q); err == nil {
+			c.m[q] = st
+		}
+	}
+}
+
+// stmt returns q's cached statement bound to tx, or nil if q is not cached (or c is nil).
+// tx.Stmt wraps the statement once per transaction, not once per call; database/sql closes
+// the wrapper when the transaction ends.
+func (c *stmtCache) stmt(tx *sql.Tx, q string) *sql.Stmt {
+	if c == nil || c.m[q] == nil {
+		return nil
+	}
+	if c.tx != tx {
+		c.tx = tx
+		c.bound = make(map[string]*sql.Stmt, len(c.m))
+	}
+	b := c.bound[q]
+	if b == nil {
+		b = tx.Stmt(c.m[q])
+		c.bound[q] = b
+	}
+	return b
+}
+
+// exec runs q in tx with the cached statement; a statement that is not cached is executed
+// directly.
+func (c *stmtCache) exec(tx *sql.Tx, q string, args ...any) (sql.Result, error) {
+	if st := c.stmt(tx, q); st != nil {
+		return st.Exec(args...)
+	}
+	return tx.Exec(q, args...)
+}
+
+// query is exec for reads.
+func (c *stmtCache) query(tx *sql.Tx, q string, args ...any) (*sql.Rows, error) {
+	if st := c.stmt(tx, q); st != nil {
+		return st.Query(args...)
+	}
+	return tx.Query(q, args...)
+}
+
+// close releases the statements; the writer must have stopped.
+func (c *stmtCache) close() {
+	c.tx, c.bound = nil, nil
+	for q, st := range c.m {
+		st.Close()
+		delete(c.m, q)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// rollups
 
 // icmpCols is the column values of an ICMP rollup row. Min, avg, max and jitter are NULL
 // when there are no replies (or no consecutive replies), which reads back as 0.
@@ -145,7 +228,7 @@ func (s *Store) insertICMPRollRow(tx *sql.Tx, q string, target int64, bucket int
 	if c.hasJitter {
 		jit = c.jitter
 	}
-	_, err := tx.Exec(q, target, bucket, ttl, path, c.n, c.lost, min, avg, max, jit, c.hist)
+	_, err := s.stmts.exec(tx, q, target, bucket, ttl, path, c.n, c.lost, min, avg, max, jit, c.hist)
 	return err
 }
 
@@ -185,7 +268,7 @@ func (s *Store) insertProbeRollRow(tx *sql.Tx, q string, probe int64, bucket int
 		dns, conn, tls, ttfb, tr = c.dns, c.connect, c.tls, c.ttfb, c.transfer
 		tmin, tavg, tmax = c.tmin, c.tavg, c.tmax
 	}
-	_, err := tx.Exec(q, probe, bucket, c.n, c.errors, dns, conn, tls, ttfb, tr, tmin, tavg, tmax, c.hist, nullInt(c.cert))
+	_, err := s.stmts.exec(tx, q, probe, bucket, c.n, c.errors, dns, conn, tls, ttfb, tr, tmin, tavg, tmax, c.hist, nullInt(c.cert))
 	return err
 }
 
@@ -357,7 +440,7 @@ func (s *Store) persistMinuteTx(tx *sql.Tx, mb MinuteBatch) error {
 // all its cells for a 1h write.
 func (s *Store) seedICMP(tx *sql.Tx, target int64) error {
 	hour := s.hacc.hour
-	rows, err := tx.Query(sqlICMPHourRows, target, hour, hour+hourUs)
+	rows, err := s.stmts.query(tx, sqlICMPHourRows, target, hour, hour+hourUs)
 	if err != nil {
 		return err
 	}
@@ -393,7 +476,7 @@ func (s *Store) seedICMP(tx *sql.Tx, target int64) error {
 // seedProbe is seedICMP for one probe.
 func (s *Store) seedProbe(tx *sql.Tx, probe int64) error {
 	hour := s.hacc.hour
-	rows, err := tx.Query(sqlProbeHourRows, probe, hour, hour+hourUs)
+	rows, err := s.stmts.query(tx, sqlProbeHourRows, probe, hour, hour+hourUs)
 	if err != nil {
 		return err
 	}
@@ -748,7 +831,7 @@ func (s *Store) SetPathDestTTL(pathID int64, ttl int) {
 // AddPathHop records a responder for (path, ttl) at a stable idx (0-based, first-seen order).
 func (s *Store) AddPathHop(pathID int64, ttl, idx int, addr string) {
 	s.enqueue(func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT OR REPLACE INTO path_hops(path_id, ttl, idx, address, share) VALUES (?,?,?,?,COALESCE((SELECT share FROM path_hops WHERE path_id=? AND ttl=? AND idx=?),1))`,
+		_, err := s.stmts.exec(tx, sqlInsertPathHop,
 			pathID, ttl, idx, addr, pathID, ttl, idx)
 		return err
 	})
@@ -768,7 +851,7 @@ func (s *Store) UpdatePathShares(pathID int64, shares []ShareUpdate) {
 	}
 	s.enqueue(func(tx *sql.Tx) error {
 		for _, sh := range shares {
-			if _, err := tx.Exec(`UPDATE path_hops SET share=? WHERE path_id=? AND ttl=? AND idx=?`, sh.Share, pathID, sh.TTL, sh.Idx); err != nil {
+			if _, err := s.stmts.exec(tx, sqlUpdatePathShare, sh.Share, pathID, sh.TTL, sh.Idx); err != nil {
 				return err
 			}
 		}

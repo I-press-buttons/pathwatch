@@ -62,8 +62,9 @@ type Store struct {
 	dropped   atomic.Int64
 	lastWrit  atomic.Int64 // unix nanos of last successful writer commit
 
-	// writer-goroutine state: only the writer's transactions (op closures) touch it
-	hacc hourAcc // running 1h rollup of the current hour
+	// writer-goroutine state: only the writer's transactions (op closures) touch these
+	stmts stmtCache // prepared statements of the writer connection
+	hacc  hourAcc   // running 1h rollup of the current hour
 
 	agg *Aggregator
 
@@ -226,6 +227,7 @@ func (s *Store) Close() error {
 		}
 		close(s.ops)
 		<-s.wdone
+		s.stmts.close()
 		err = errors.Join(s.rdb.Close(), s.wdb.Close())
 	})
 	return err
@@ -304,6 +306,7 @@ func (s *Store) writer() {
 }
 
 func (s *Store) runTx(batch []op) error {
+	s.stmts.prepare(s.wdb) // outside the transaction: it would hold the only connection
 	tx, err := s.wdb.Begin()
 	if err != nil {
 		return err

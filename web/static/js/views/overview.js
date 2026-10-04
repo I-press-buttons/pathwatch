@@ -1,5 +1,5 @@
 // Overview: one card per target, status strip, DNS probes, add/edit target.
-import { h, clear, isNum, fmtMs, fmtPct, fmtMos, fmtAgo, lsGet, lsSet, DASH, plural } from '../util.js';
+import { h, clear, isNum, fmtMs, fmtPct, fmtMos, fmtAgo, clamp, lsGet, lsSet, DASH, plural } from '../util.js';
 import { api, onStream, serverNow } from '../api.js';
 import { getStatus, onStatus } from '../store.js';
 import { statusPill, sparkline, panel, confirmDialog, metricClass } from '../ui.js';
@@ -7,13 +7,18 @@ import { dnsPanel } from './dns.js';
 import { openTargetEditor } from './target-editor.js';
 
 const RANGES = ['1h', '6h', '24h'];
+const RANGE_MS = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 86400e3 };
+const TARGETS_MS = 10000;   // /api/targets cadence
+const SPARK_BUCKETS = 60;   // the sparkline overview is bucketed server side into this many steps
+const SOON_MS = 300;        // SSE-triggered loads within this window collapse into one
 
 export function mount(root, ctx) {
   let range = lsGet('pathwatch.overviewRange', '1h');
   if (!RANGES.includes(range)) range = '1h';
   let targets = null, spark = new Map(), loadedOnce = false, destroyed = false, timer = null, seq = 0;
+  let busy = false, again = false, ctl = null, soon = null, sparkAt = 0, sparkRange = null;
 
-  const rangeSel = h('select', { 'aria-label': 'Sparkline range', onchange: () => { range = rangeSel.value; lsSet('pathwatch.overviewRange', range); load(); } },
+  const rangeSel = h('select', { 'aria-label': 'Sparkline range', onchange: () => { range = rangeSel.value; lsSet('pathwatch.overviewRange', range); load({ fresh: true }); } },
     RANGES.map((r) => h('option', { value: r, selected: r === range }, 'Last ' + r)));
   const addBtn = h('button', { class: 'btn primary', onclick: () => openAddDialog() }, '+ Add target');
   const head = h('div', { class: 'page-head' }, h('h1', null, 'Overview'), h('div', { class: 'grow' }), rangeSel, addBtn);
@@ -84,21 +89,37 @@ export function mount(root, ctx) {
     for (const t of targets) gridEl.append(targetCard(t));
   }
 
-  async function load() {
+  // The sparkline only changes once per bucket (range / 60), so it is refetched at most every min(max(10 s, step), 60 s),
+  // or at once when the range changes; /api/targets keeps its own cadence. Loads never overlap: a request that arrives while
+  // one is in flight becomes a single follow-up, except a range change, which cancels the (now useless) in-flight load.
+  const sparkEvery = () => clamp(RANGE_MS[range] / SPARK_BUCKETS, TARGETS_MS, 60000);
+  async function load({ fresh = false } = {}) {
+    if (destroyed) return;
+    if (busy) { if (!fresh) { again = true; return; } ctl.abort(); }
     const my = ++seq;
+    const signal = (ctl = new AbortController()).signal;
+    busy = true; again = false;
+    const started = Date.now(), rng = range;
+    const wantSpark = sparkRange !== rng || started - sparkAt >= sparkEvery() - 500; // 500 ms: interval ticks are not exact
     if (!loadedOnce) { msgEl.hidden = false; msgEl.className = 'state-msg'; clear(msgEl).append(h('span', { class: 'spinner' }), 'Loading targets…'); }
     try {
-      const [t, o] = await Promise.all([api.targets(), api.overview({ range }).catch(() => [])]);
+      const [t, o] = await Promise.all([api.targets({ signal }),
+        wantSpark ? api.overview({ range: rng }, { signal }).catch((e) => { if (e && e.name === 'AbortError') throw e; return null; }) : null]);
       if (my !== seq || destroyed) return;
       targets = t || [];
-      spark = new Map((o || []).map((x) => [x.target_id, x]));
+      if (o) { spark = new Map(o.map((x) => [x.target_id, x])); sparkAt = started; sparkRange = rng; }
+      else if (wantSpark && sparkRange !== rng) spark = new Map(); // failed for a new range: don't show the old range's lines (retried next load)
       loadedOnce = true;
       render();
     } catch (e) {
       if (e.name === 'AbortError' || destroyed) return;
       if (!loadedOnce) { msgEl.hidden = false; msgEl.className = 'state-msg error'; clear(msgEl).append('Could not load targets. ', h('span', { class: 'sub' }, e.message + ' — retrying…')); }
+    } finally {
+      if (my === seq) { busy = false; if (again && !destroyed) { again = false; load(); } }
     }
   }
+  /** SSE-triggered load: a burst of events collapses into one load */
+  function loadSoon() { if (!soon) soon = setTimeout(() => { soon = null; load(); }, SOON_MS); }
 
   async function togglePause(t) {
     try { if (t.active === false) await api.resumeTarget(t.id); else await api.pauseTarget(t.id); } catch (e) { alert(e.message); }
@@ -116,15 +137,15 @@ export function mount(root, ctx) {
 
   const offs = [
     onStatus(() => renderStrip()),
-    onStream('targets', () => load()),
-    onStream('alert', () => load()),
+    onStream('targets', loadSoon),
+    onStream('alert', loadSoon),
   ];
   load();
   dns.load();
-  timer = setInterval(() => { load(); }, 10000);
+  timer = setInterval(() => { load(); }, TARGETS_MS);
   const dnsTimer = setInterval(() => dns.load(), 15000);
 
   return {
-    destroy() { destroyed = true; clearInterval(timer); clearInterval(dnsTimer); offs.forEach((f) => f()); },
+    destroy() { destroyed = true; clearInterval(timer); clearInterval(dnsTimer); clearTimeout(soon); if (ctl) ctl.abort(); offs.forEach((f) => f()); },
   };
 }

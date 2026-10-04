@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 	"time"
 
@@ -78,7 +77,7 @@ func New(d Deps) *Server {
 	s.passSum = sha256.Sum256([]byte(d.Auth.Password))
 	s.hub.alertJSON = s.alertByID
 	if d.Static != nil {
-		s.files = http.FileServerFS(d.Static)
+		s.files = newStaticHandler(d.Static, d.Logger)
 	}
 	s.routes()
 	return s
@@ -419,33 +418,7 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "ui not available")
 		return
 	}
-	p := path.Clean(r.URL.Path)
-	if p == "/" || p == "." {
-		p = "/index.html"
-	}
-	name := strings.TrimPrefix(p, "/")
-	if st, err := fs.Stat(s.d.Static, name); err == nil && !st.IsDir() {
-		w.Header().Set("Cache-Control", "no-cache")
-		s.files.ServeHTTP(w, r)
-		return
-	}
-	// Single-page app: unknown paths without a file extension get the app shell. Missing assets
-	// (a path with an extension) are real 404s.
-	if path.Ext(name) != "" {
-		http.NotFound(w, r)
-		return
-	}
-	b, err := fs.ReadFile(s.d.Static, "index.html")
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	if r.Method == http.MethodHead {
-		return
-	}
-	_, _ = w.Write(b)
+	s.files.ServeHTTP(w, r)
 }
 
 // ---------------------------------------------------------------------------

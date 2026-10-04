@@ -52,13 +52,19 @@ type Store struct {
 	log  *slog.Logger
 	now  func() time.Time
 
-	ops      chan op
-	quit     chan struct{}
-	wdone    chan struct{}
-	bgdone   chan struct{}
-	closeMu  sync.Once
-	dropped  atomic.Int64
-	lastWrit atomic.Int64 // unix nanos of last successful writer commit
+	ops       chan op
+	quit      chan struct{}
+	wdone     chan struct{}
+	bgdone    chan struct{}
+	retCancel context.CancelFunc // cancelled when Close begins; stops retention between chunks
+	retdone   chan struct{}
+	closeMu   sync.Once
+	dropped   atomic.Int64
+	lastWrit  atomic.Int64 // unix nanos of last successful writer commit
+
+	// writer-goroutine state: only the writer's transactions (op closures) touch these
+	stmts stmtCache // prepared statements of the writer connection
+	hacc  hourAcc   // running 1h rollup of the current hour
 
 	agg *Aggregator
 
@@ -66,6 +72,10 @@ type Store struct {
 	subs  []func(MinuteBatch)
 
 	pathMu sync.Mutex // guards destTTL cache
+
+	certMu  sync.Mutex // guards the newest-certificate cache (certcache.go)
+	certs   map[int64]certEntry
+	certGen uint64 // bumped whenever entries are forgotten, so an in-flight lookup cannot resurrect one
 }
 
 // Open opens (creating if needed) the database at path, applies migrations and starts the
@@ -120,21 +130,30 @@ func Open(path string, o Options) (*Store, error) {
 		wdb.Close()
 		return nil, err
 	}
+	// keep every pooled connection open: with the default of 2 idle ones, the UI's parallel
+	// requests would keep closing and reopening connections
 	rdb.SetMaxOpenConns(4)
+	rdb.SetMaxIdleConns(4)
+	retCtx, retCancel := context.WithCancel(context.Background())
 	s := &Store{
 		wdb: wdb, rdb: rdb, opts: o, log: o.Logger, now: o.Now,
-		ops:    make(chan op, 8192),
-		quit:   make(chan struct{}),
-		wdone:  make(chan struct{}),
-		bgdone: make(chan struct{}),
-		agg:    NewAggregator(),
+		ops:       make(chan op, 8192),
+		quit:      make(chan struct{}),
+		wdone:     make(chan struct{}),
+		bgdone:    make(chan struct{}),
+		retCancel: retCancel,
+		retdone:   make(chan struct{}),
+		agg:       NewAggregator(),
+		certs:     make(map[int64]certEntry),
 	}
 	s.lastWrit.Store(time.Now().UnixNano())
 	go s.writer()
 	if o.NoBackground {
 		close(s.bgdone)
+		close(s.retdone)
 	} else {
 		go s.background()
+		go s.retention(retCtx)
 	}
 	return s, nil
 }
@@ -199,13 +218,16 @@ func (s *Store) Close() error {
 	var err error
 	s.closeMu.Do(func() {
 		close(s.quit)
+		s.retCancel()
 		<-s.bgdone
+		<-s.retdone // retention deletes go through the writer, which must outlive them
 		// flush everything still in memory, then stop the writer
 		for _, mb := range s.agg.FlushAll() {
 			s.persistMinute(mb)
 		}
 		close(s.ops)
 		<-s.wdone
+		s.stmts.close()
 		err = errors.Join(s.rdb.Close(), s.wdb.Close())
 	})
 	return err
@@ -284,6 +306,7 @@ func (s *Store) writer() {
 }
 
 func (s *Store) runTx(batch []op) error {
+	s.stmts.prepare(s.wdb) // outside the transaction: it would hold the only connection
 	tx, err := s.wdb.Begin()
 	if err != nil {
 		return err
@@ -302,6 +325,7 @@ func (s *Store) runTx(batch []op) error {
 		}
 	}
 	if err := tx.Commit(); err != nil {
+		s.hacc.reset() // everything it folded in was lost with the transaction
 		return err
 	}
 	return nil
@@ -339,28 +363,36 @@ func (s *Store) background() {
 	defer close(s.bgdone)
 	flushT := time.NewTicker(time.Second)
 	defer flushT.Stop()
-	retT := time.NewTicker(time.Hour)
-	defer retT.Stop()
-	time.AfterFunc(30*time.Second, func() {
-		select {
-		case <-s.quit:
-		default:
-			if err := s.Retain(context.Background()); err != nil {
-				s.log.Warn("retention failed", "err", err)
-			}
-		}
-	})
 	for {
 		select {
 		case <-s.quit:
 			return
 		case <-flushT.C:
 			s.FlushDue(s.now())
-		case <-retT.C:
-			if err := s.Retain(context.Background()); err != nil {
-				s.log.Warn("retention failed", "err", err)
-			}
 		}
+	}
+}
+
+// retentionFirstRun is the delay before the first retention run (a variable for tests).
+var retentionFirstRun = 30 * time.Second
+
+// retention runs the expiry job on its own goroutine, first retentionFirstRun after start and
+// then hourly, so a long run never stalls the flush loop (minute rollups, hop classification,
+// alerts).
+func (s *Store) retention(ctx context.Context) {
+	defer close(s.retdone)
+	t := time.NewTimer(retentionFirstRun)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if err := s.Retain(ctx); err != nil && ctx.Err() == nil {
+			s.log.Warn("retention failed", "err", err)
+		}
+		t.Reset(time.Hour)
 	}
 }
 

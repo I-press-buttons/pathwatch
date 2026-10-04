@@ -14,6 +14,8 @@ export class Heatmap {
     this.selectedTtl = null; this.scaleSetting = 'auto';
     this.hoverTs = null; this.hoverRow = -1;
     this.drag = null;
+    this.raf = 0; this.pm = null; this.ovDirty = false; // pointer moves and bus updates are applied once per animation frame
+    this.tipKey = null;                                 // what the tooltip currently shows (row:bucket or event)
     this.evHits = [];
     this.dpr = window.devicePixelRatio || 1;
     this.canvas = h('canvas', { role: 'img', 'aria-label': 'Path timeline heatmap' });
@@ -23,7 +25,7 @@ export class Heatmap {
     host.appendChild(this.wrap);
     this.ro = new ResizeObserver(() => this.layout());
     this.ro.observe(this.wrap);
-    this.offBus = hoverBus.on((ts, src) => { if (src === 'heat') return; this.hoverTs = ts; this.drawOverlay(); });
+    this.offBus = hoverBus.on((ts, src) => { if (src === 'heat') return; this.hoverTs = ts; this.ovDirty = true; this.schedule(); });
     const o = this.overlay;
     o.addEventListener('pointerdown', (e) => this.onDown(e));
     o.addEventListener('pointermove', (e) => this.onMove(e));
@@ -33,10 +35,11 @@ export class Heatmap {
     o.addEventListener('dblclick', () => { /* reserved */ });
   }
 
-  destroy() { this.ro.disconnect(); this.offBus(); this.wrap.remove(); }
+  destroy() { this.cancelFrame(); this.ro.disconnect(); this.offBus(); this.wrap.remove(); }
 
   setData(tl, axis, { selectedTtl = null } = {}) {
     this.tl = tl; this.axis = axis; this.selectedTtl = selectedTtl;
+    this.tipKey = null; // new data: the tooltip is rebuilt on the next pointer move
     this.derive();
     this.layout();
   }
@@ -284,6 +287,7 @@ export class Heatmap {
 
   // ---------- overlay: crosshair, selection ----------
   drawOverlay() {
+    this.ovDirty = false;
     const m = this.m;
     if (!m || m.W < 20) return;
     const c = getColors();
@@ -309,30 +313,49 @@ export class Heatmap {
     }
   }
 
-  pos(e) { const r = this.overlay.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+  pos(e) { return this.posAt(e.clientX, e.clientY); }
+  posAt(cx, cy) { const r = this.overlay.getBoundingClientRect(); return { x: cx - r.left, y: cy - r.top }; }
   rowAt(y) { const m = this.m; const i = Math.floor((y - m.top) / m.rowH); return i >= 0 && i < m.rows ? i : -1; }
+
+  // ---------- frame coalescing ----------
+  schedule() { if (!this.raf) this.raf = requestAnimationFrame(() => this.frame()); }
+  cancelFrame() { if (this.raf) cancelAnimationFrame(this.raf); this.raf = 0; this.pm = null; this.ovDirty = false; }
+  /** run the pending frame now (before pointer down/up read the drag state) */
+  flushMove() { if (!this.raf) return; cancelAnimationFrame(this.raf); this.frame(); }
+  frame() {
+    this.raf = 0;
+    const p = this.pm; this.pm = null;
+    if (p && this.tl && this.m) { const { x, y } = this.posAt(p.cx, p.cy); this.move(x, y); }
+    if (this.ovDirty) this.drawOverlay();
+  }
 
   onDown(e) {
     if (e.button !== 0 || !this.tl) return;
+    this.flushMove();
     const { x, y } = this.pos(e);
     this.drag = { x0: x, y0: y, x, active: false, inPlot: x >= this.m.x0 && x <= this.m.x0 + this.m.pw && y >= this.m.top };
     try { this.overlay.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
   }
   onMove(e) {
     if (!this.tl || !this.m) return;
-    const { x, y } = this.pos(e);
+    this.pm = { cx: e.clientX, cy: e.clientY }; // only the latest position matters
+    this.schedule();
+  }
+  move(x, y) {
     if (this.drag) {
       this.drag.x = clamp(x, this.m.x0, this.m.x0 + this.m.pw);
       if (this.drag.inPlot && Math.abs(x - this.drag.x0) > 5) this.drag.active = true;
-      if (this.drag.active) { this.tt.hidden = true; this.drawOverlay(); return; }
+      if (this.drag.active) { this.hideTip(); this.drawOverlay(); return; }
     }
     this.hover(x, y);
   }
   onLeave() {
     if (this.drag && this.drag.active) return;
-    this.hoverTs = null; this.hoverRow = -1; this.tt.hidden = true; this.drawOverlay(); hoverBus.emit(null, 'heat');
+    this.cancelFrame();
+    this.hoverTs = null; this.hoverRow = -1; this.hideTip(); this.drawOverlay(); hoverBus.emit(null, 'heat');
   }
   onUp(e) {
+    this.flushMove();
     const d = this.drag; this.drag = null;
     try { this.overlay.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
     if (!d) return;
@@ -363,32 +386,37 @@ export class Heatmap {
     if (y < m.top && inPlot) {
       let best = null, bd = 1e9;
       for (const hit of this.evHits) { const d = Math.hypot(hit.x - x, hit.y - y); if (d < hit.r && d < bd) { best = hit; bd = d; } }
-      if (best) { this.showTip(x, y, this.eventTip(best.ev)); return; }
-      this.tt.hidden = true; return;
+      if (best) { this.showTip(x, y, best.ev, () => this.eventTip(best.ev)); return; }
+      this.hideTip(); return;
     }
-    if (this.hoverRow < 0) { this.tt.hidden = true; return; }
+    if (this.hoverRow < 0) { this.hideTip(); return; }
     const i = this.hoverRow;
+    // the tooltip only depends on (row, bucket): -1 = no bucket under the pointer
+    let j = -1;
+    if (inPlot) {
+      const jj = Math.floor((this.hoverTs - tl.from) / tl.step_ms);
+      if (jj >= 0 && jj < (tl.rtt[i] ? tl.rtt[i].length : 0)) j = jj;
+    }
+    this.showTip(x, y, i + ':' + j, () => this.cellTip(i, j));
+  }
+
+  cellTip(i, j) {
+    const tl = this.tl;
     const lab = (tl.labels && tl.labels[i]) || {};
     const rows = [];
     rows.push(h('div', null, h('b', null, 'Hop ' + tl.ttls[i]), ' ', lab.hostname || lab.address || '* * *'));
     if (lab.hostname && lab.address) rows.push(h('div', { class: 'k' }, lab.address));
     if (lab.classification === 'rate_limited') rows.push(h('div', { class: 'k' }, 'ICMP rate-limited'));
-    if (inPlot) {
-      const j = Math.floor((this.hoverTs - tl.from) / tl.step_ms);
-      const nb = tl.rtt[i] ? tl.rtt[i].length : 0;
-      if (j >= 0 && j < nb) {
-        const r = tl.rtt[i][j], l = tl.loss[i][j];
-        const tsj = tl.from + j * tl.step_ms;
-        rows.push(h('div', { class: 'k' }, fmtDateTime(tsj) + (tl.step_ms >= 60000 ? ' (' + fmtDuration(tl.step_ms) + ' bucket)' : '')));
-        if (!isNum(r) && !isNum(l)) rows.push(h('div', null, 'No data (monitor gap)'));
-        else rows.push(h('div', null, h('span', { class: 'k' }, 'avg '), isNum(r) ? fmtMs(r) + ' ms' : 'no reply', h('span', { class: 'k' }, '  loss '), isNum(l) ? fmtPct(l) : '–'));
-      } else {
-        rows.push(h('div', { class: 'k' }, 'avg ' + (isNum(this.rowAvg[i]) ? fmtMs(this.rowAvg[i]) + ' ms' : '–') + ' over range'));
-      }
+    if (j >= 0) {
+      const r = tl.rtt[i][j], l = tl.loss[i][j];
+      const tsj = tl.from + j * tl.step_ms;
+      rows.push(h('div', { class: 'k' }, fmtDateTime(tsj) + (tl.step_ms >= 60000 ? ' (' + fmtDuration(tl.step_ms) + ' bucket)' : '')));
+      if (!isNum(r) && !isNum(l)) rows.push(h('div', null, 'No data (monitor gap)'));
+      else rows.push(h('div', null, h('span', { class: 'k' }, 'avg '), isNum(r) ? fmtMs(r) + ' ms' : 'no reply', h('span', { class: 'k' }, '  loss '), isNum(l) ? fmtPct(l) : '–'));
     } else {
       rows.push(h('div', { class: 'k' }, 'avg ' + (isNum(this.rowAvg[i]) ? fmtMs(this.rowAvg[i]) + ' ms' : '–') + ' over range'));
     }
-    this.showTip(x, y, rows);
+    return rows;
   }
 
   eventTip(ev) {
@@ -401,10 +429,11 @@ export class Heatmap {
     return rows;
   }
 
-  showTip(x, y, rows) {
+  hideTip() { this.tt.hidden = true; this.tipKey = null; }
+  /** key identifies the hovered target; the content is only rebuilt when it changes, the position follows every frame */
+  showTip(x, y, key, build) {
     const tt = this.tt;
-    tt.replaceChildren(...rows);
-    tt.hidden = false;
+    if (key !== this.tipKey || tt.hidden) { tt.replaceChildren(...build()); tt.hidden = false; this.tipKey = key; }
     const w = tt.offsetWidth, hh = tt.offsetHeight;
     let left = x + 14, top = y + 14;
     if (left + w > this.m.W - 4) left = x - w - 14;

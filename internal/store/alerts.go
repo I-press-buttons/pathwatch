@@ -137,15 +137,23 @@ func (s *Store) EnqueueOutbox(alertID int64, channel, payload string, now time.T
 	return id, err
 }
 
+// The sender polls the outbox every few seconds; both queries select on status IN
+// ('queued','retrying') so that the outbox_status index (migration 3) limits them to the pending
+// rows instead of the whole table, which keeps delivered rows as the alerts feed history.
+const (
+	dueOutboxSQL = `SELECT o.id, o.alert_id, o.channel, o.payload, o.status, o.created_at, o.attempts, COALESCE(o.next_attempt_at, o.created_at), COALESCE(o.last_error,'')
+		FROM outbox o
+		WHERE o.status IN ('queued','retrying') AND COALESCE(o.next_attempt_at, o.created_at) <= ?
+		AND NOT EXISTS (SELECT 1 FROM outbox p WHERE p.alert_id=o.alert_id AND p.channel=o.channel AND p.id<o.id AND p.status IN ('queued','retrying'))
+		ORDER BY o.id LIMIT ?`
+	nextOutboxDueSQL = `SELECT MIN(COALESCE(next_attempt_at, created_at)) FROM outbox WHERE status IN ('queued','retrying')`
+)
+
 // DueOutbox returns up to limit undelivered rows whose next attempt is due, oldest first. A row
 // is held back while an earlier notification of the same alert and channel is still pending, so
 // "resolved" never overtakes "firing".
 func (s *Store) DueOutbox(now time.Time, limit int) ([]OutboxRow, error) {
-	rows, err := s.rdb.Query(`SELECT o.id, o.alert_id, o.channel, o.payload, o.status, o.created_at, o.attempts, COALESCE(o.next_attempt_at, o.created_at), COALESCE(o.last_error,'')
-		FROM outbox o
-		WHERE o.status IN ('queued','retrying') AND COALESCE(o.next_attempt_at, o.created_at) <= ?
-		AND NOT EXISTS (SELECT 1 FROM outbox p WHERE p.alert_id=o.alert_id AND p.channel=o.channel AND p.id<o.id AND p.status IN ('queued','retrying'))
-		ORDER BY o.id LIMIT ?`, us(now), limit)
+	rows, err := s.rdb.Query(dueOutboxSQL, us(now), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +174,7 @@ func (s *Store) DueOutbox(now time.Time, limit int) ([]OutboxRow, error) {
 // NextOutboxDue returns the earliest next-attempt time among pending rows.
 func (s *Store) NextOutboxDue() (time.Time, bool) {
 	var v sql.NullInt64
-	_ = s.rdb.QueryRow(`SELECT MIN(COALESCE(next_attempt_at, created_at)) FROM outbox WHERE status IN ('queued','retrying')`).Scan(&v)
+	_ = s.rdb.QueryRow(nextOutboxDueSQL).Scan(&v)
 	if !v.Valid {
 		return time.Time{}, false
 	}

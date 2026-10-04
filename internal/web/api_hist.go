@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/netip"
@@ -24,7 +25,7 @@ type e2eResult struct {
 	points   []e2ePoint
 	source   string // icmp | tcp | last_hop | http | ""
 	ttl      int    // destination or last-hop TTL (icmp / last_hop)
-	lastResp int
+	lastResp int    // highest responding TTL in the range; exact with detail, and for a last_hop series
 }
 
 func pointFromRoll(r *store.Roll) e2ePoint {
@@ -59,15 +60,24 @@ func pointFromProbe(r *store.ProbeRoll) e2ePoint {
 }
 
 // e2e returns the end-to-end series of a target: destination ICMP, else the TCP probe (the
-// signal for destinations that drop ICMP), else the last responding hop, else HTTP.
-func (s *Server) e2e(v targetView, plan store.Plan) (e2eResult, error) {
+// signal for destinations that drop ICMP), else the last responding hop, else HTTP. Only the
+// hops that series can come from are loaded, without histograms. detail keeps the histograms
+// (the points' p95) and makes lastResp exact, which the 5-minute summary needs.
+func (s *Server) e2e(ctx context.Context, v targetView, plan store.Plan, detail bool) (e2eResult, error) {
 	var res e2eResult
-	cells, err := s.d.Store.ICMPCells(v.row.ID, plan)
+	unresp := v.hasSt && v.state.ICMPUnresponsive
+	tcp := v.probesOfType(config.ProbeTCP)
+	// lastResp is also the TTL of a last_hop series, which the unresponsive state leads to
+	opts := store.CellOpts{NoHist: !detail, LastResp: detail || unresp, E2E: store.E2EDestOrLast}
+	if len(tcp) > 0 {
+		opts.E2E = store.E2EDest // the TCP probe comes before the last hop
+	}
+	cells, err := s.d.Store.ICMPCells(ctx, v.row.ID, plan, opts)
 	if err != nil {
 		return res, err
 	}
 	res.lastResp = cells.LastRespTTL()
-	unresp := v.hasSt && v.state.ICMPUnresponsive
+	probeOpts := store.CellOpts{NoHist: !detail}
 	latestDest := func() int {
 		if p, err := s.d.Store.LatestPath(v.row.ID); err == nil {
 			return p.DestTTL
@@ -83,18 +93,16 @@ func (s *Server) e2e(v targetView, plan store.Plan) (e2eResult, error) {
 			return res, nil
 		}
 	}
-	for _, typ := range []string{config.ProbeTCP} {
-		if ps := v.probesOfType(typ); len(ps) > 0 {
-			pc, err := s.d.Store.ProbeCells(ps[0].ID, typ, plan)
-			if err != nil {
-				return res, err
-			}
-			res.source = typ
-			for _, r := range pc.Rolls {
-				res.points = append(res.points, pointFromProbe(r))
-			}
-			return res, nil
+	if len(tcp) > 0 {
+		pc, err := s.d.Store.ProbeCells(ctx, tcp[0].ID, config.ProbeTCP, plan, probeOpts)
+		if err != nil {
+			return res, err
 		}
+		res.source = config.ProbeTCP
+		for _, r := range pc.Rolls {
+			res.points = append(res.points, pointFromProbe(r))
+		}
+		return res, nil
 	}
 	if rolls, ok := cells.E2ESeries(true); ok {
 		res.source, res.ttl = "last_hop", res.lastResp
@@ -104,7 +112,7 @@ func (s *Server) e2e(v targetView, plan store.Plan) (e2eResult, error) {
 		return res, nil
 	}
 	if ps := v.probesOfType(config.ProbeHTTP); len(ps) > 0 {
-		pc, err := s.d.Store.ProbeCells(ps[0].ID, config.ProbeHTTP, plan)
+		pc, err := s.d.Store.ProbeCells(ctx, ps[0].ID, config.ProbeHTTP, plan, probeOpts)
 		if err != nil {
 			return res, err
 		}
@@ -114,6 +122,15 @@ func (s *Server) e2e(v targetView, plan store.Plan) (e2eResult, error) {
 		}
 	}
 	return res, nil
+}
+
+// queryFailed answers a failed query. A client that went away mid-query (its request context
+// is done) is not a server error: there is nobody to answer and nothing to log.
+func (s *Server) queryFailed(w http.ResponseWriter, r *http.Request, err error) {
+	if r.Context().Err() != nil {
+		return
+	}
+	s.internal(w, r, err)
 }
 
 // rangeAndPlan parses range/buckets for history endpoints.
@@ -141,14 +158,14 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.d.Store.Targets(false)
 	if err != nil {
-		s.internal(w, r, err)
+		s.queryFailed(w, r, err)
 		return
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
-		e, err := s.e2e(s.viewOf(row), plan)
+		e, err := s.e2e(r.Context(), s.viewOf(row), plan, false)
 		if err != nil {
-			s.internal(w, r, err)
+			s.queryFailed(w, r, err)
 			return
 		}
 		pts := make([][]any, plan.N)
@@ -281,14 +298,14 @@ func (s *Server) handleHops(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	plan := store.SinglePlan(from, to, store.TierFor(from, to))
-	cells, err := s.d.Store.ICMPCells(row.ID, plan)
+	cells, err := s.d.Store.ICMPCells(r.Context(), row.ID, plan, store.CellOpts{})
 	if err != nil {
-		s.internal(w, r, err)
+		s.queryFailed(w, r, err)
 		return
 	}
 	pc, err := s.loadPathCtx(row, plan)
 	if err != nil {
-		s.internal(w, r, err)
+		s.queryFailed(w, r, err)
 		return
 	}
 	resp := map[string]any{"target_id": row.ID, "path_id": nil, "resolved_ip": nil, "from": from.UnixMilli(), "to": to.UnixMilli()}
@@ -355,14 +372,14 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	cells, err := s.d.Store.ICMPCells(row.ID, plan)
+	cells, err := s.d.Store.ICMPCells(r.Context(), row.ID, plan, store.CellOpts{NoHist: true})
 	if err != nil {
-		s.internal(w, r, err)
+		s.queryFailed(w, r, err)
 		return
 	}
 	pc, err := s.loadPathCtx(row, plan)
 	if err != nil {
-		s.internal(w, r, err)
+		s.queryFailed(w, r, err)
 		return
 	}
 	end := lastTTL(cells, pc)
@@ -398,7 +415,7 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	}
 	gaps, err := s.d.Store.Gaps(row.ID, plan.From, plan.To)
 	if err != nil {
-		s.internal(w, r, err)
+		s.queryFailed(w, r, err)
 		return
 	}
 	gj := make([][2]int64, 0, len(gaps))
@@ -409,7 +426,7 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	evs, err := s.d.Store.Events(store.EventQuery{TargetID: &tid, From: plan.From, To: plan.To,
 		Kinds: []string{store.EventRouteChange, store.EventRateLimited, store.EventICMPUnresponsive, store.EventLocalOutage}})
 	if err != nil {
-		s.internal(w, r, err)
+		s.queryFailed(w, r, err)
 		return
 	}
 	events := make([]map[string]any, 0, len(evs))
@@ -422,7 +439,7 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	}
 	als, err := s.d.Store.AlertsOverlapping(row.ID, plan.From, plan.To)
 	if err != nil {
-		s.internal(w, r, err)
+		s.queryFailed(w, r, err)
 		return
 	}
 	for _, a := range als {
@@ -460,9 +477,9 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid ttl")
 			return
 		}
-		cells, err := s.d.Store.ICMPCells(row.ID, plan)
+		cells, err := s.d.Store.ICMPCells(r.Context(), row.ID, plan, store.CellOpts{NoHist: true, TTL: n})
 		if err != nil {
-			s.internal(w, r, err)
+			s.queryFailed(w, r, err)
 			return
 		}
 		ttl = n
@@ -472,9 +489,9 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 			pts = append(pts, seriesPoint(ts, p))
 		}
 	} else {
-		e, err := s.e2e(s.viewOf(row), plan)
+		e, err := s.e2e(r.Context(), s.viewOf(row), plan, false)
 		if err != nil {
-			s.internal(w, r, err)
+			s.queryFailed(w, r, err)
 			return
 		}
 		if e.ttl > 0 {
@@ -516,9 +533,9 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 	for _, p := range v.probes {
 		switch p.Type {
 		case config.ProbeHTTP:
-			pc, err := s.d.Store.ProbeCells(p.ID, p.Type, plan)
+			pc, err := s.d.Store.ProbeCells(r.Context(), p.ID, p.Type, plan, store.CellOpts{NoHist: true})
 			if err != nil {
-				s.internal(w, r, err)
+				s.queryFailed(w, r, err)
 				return
 			}
 			pts := make([][]any, 0, plan.N)
@@ -543,9 +560,9 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 			}
 			httpOut = append(httpOut, map[string]any{"probe_id": p.ID, "label": p.Label, "cert_not_after": cert, "points": pts})
 		case config.ProbeTCP:
-			pc, err := s.d.Store.ProbeCells(p.ID, p.Type, plan)
+			pc, err := s.d.Store.ProbeCells(r.Context(), p.ID, p.Type, plan, store.CellOpts{NoHist: true})
 			if err != nil {
-				s.internal(w, r, err)
+				s.queryFailed(w, r, err)
 				return
 			}
 			pts := make([][]any, 0, plan.N)
@@ -573,9 +590,9 @@ func (s *Server) handleDNS(w http.ResponseWriter, r *http.Request) {
 	out := []map[string]any{}
 	if s.d.Sched != nil {
 		for _, d := range s.d.Sched.DNSStates() {
-			pc, err := s.d.Store.ProbeCells(d.ProbeID, config.ProbeDNS, plan)
+			pc, err := s.d.Store.ProbeCells(r.Context(), d.ProbeID, config.ProbeDNS, plan, store.CellOpts{NoHist: true})
 			if err != nil {
-				s.internal(w, r, err)
+				s.queryFailed(w, r, err)
 				return
 			}
 			pts := make([][]any, 0, plan.N)

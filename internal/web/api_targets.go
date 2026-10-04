@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -160,9 +161,9 @@ func (s *Server) handleTargets(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]targetJSON, 0, len(rows))
 	for _, row := range rows {
-		tj, err := s.buildTarget(s.viewOf(row), counts)
+		tj, err := s.buildTarget(r.Context(), s.viewOf(row), counts)
 		if err != nil {
-			s.internal(w, r, err)
+			s.queryFailed(w, r, err)
 			return
 		}
 		out = append(out, tj)
@@ -170,7 +171,7 @@ func (s *Server) handleTargets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) buildTarget(v targetView, counts map[int64]int) (targetJSON, error) {
+func (s *Server) buildTarget(ctx context.Context, v targetView, counts map[int64]int) (targetJSON, error) {
 	now := s.now()
 	tj := targetJSON{
 		ID: v.row.ID, Name: v.row.Name, Host: v.row.Host, HostKind: config.HostKind(v.row.Host), Source: v.row.Source,
@@ -204,7 +205,7 @@ func (s *Server) buildTarget(v targetView, counts map[int64]int) (targetJSON, er
 	}
 	tj.LastRound = msPtr(last)
 
-	sum, e2eLoss, httpOK, err := s.summarize(v, now)
+	sum, e2eLoss, httpOK, err := s.summarize(ctx, v, now)
 	if err != nil {
 		return tj, err
 	}
@@ -215,10 +216,10 @@ func (s *Server) buildTarget(v targetView, counts map[int64]int) (targetJSON, er
 }
 
 // summarize computes the 5-minute summary of a target.
-func (s *Server) summarize(v targetView, now time.Time) (summaryJSON, *float64, bool, error) {
+func (s *Server) summarize(ctx context.Context, v targetView, now time.Time) (summaryJSON, *float64, bool, error) {
 	var sum summaryJSON
 	plan := store.SinglePlan(now.Add(-5*time.Minute), now, store.TierRaw)
-	e2e, err := s.e2e(v, plan)
+	e2e, err := s.e2e(ctx, v, plan, true)
 	if err != nil {
 		return sum, nil, false, err
 	}
@@ -250,7 +251,7 @@ func (s *Server) summarize(v targetView, now time.Time) (summaryJSON, *float64, 
 	var merged store.ProbeRoll
 	var certMin time.Time
 	for _, p := range v.probesOfType(config.ProbeHTTP) {
-		pc, err := s.d.Store.ProbeCells(p.ID, p.Type, plan)
+		pc, err := s.d.Store.ProbeCells(ctx, p.ID, p.Type, plan, store.CellOpts{NoHist: true})
 		if err != nil {
 			return sum, nil, false, err
 		}
@@ -416,9 +417,9 @@ func (s *Server) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) writeTarget(w http.ResponseWriter, r *http.Request, row store.TargetRow, code int) {
 	counts, _, _ := s.d.Store.ActiveAlertCounts()
-	tj, err := s.buildTarget(s.viewOf(row), counts)
+	tj, err := s.buildTarget(r.Context(), s.viewOf(row), counts)
 	if err != nil {
-		s.internal(w, r, err)
+		s.queryFailed(w, r, err)
 		return
 	}
 	writeJSON(w, code, tj)

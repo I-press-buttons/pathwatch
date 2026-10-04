@@ -415,7 +415,7 @@ func TestQueriesAcrossTiers(t *testing.T) {
 
 	for _, tier := range []Tier{TierRaw, Tier1m, Tier1h} {
 		plan := SinglePlan(t0, t0.Add(30*time.Minute), tier)
-		cells, err := s.ICMPCells(tr.ID, plan)
+		cells, err := s.ICMPCells(context.Background(), tr.ID, plan, CellOpts{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -433,7 +433,7 @@ func TestQueriesAcrossTiers(t *testing.T) {
 	}
 	// bucketed raw series
 	plan := MakePlan(t0, t0.Add(20*time.Minute), 10)
-	cells, _ := s.ICMPCells(tr.ID, plan)
+	cells, _ := s.ICMPCells(context.Background(), tr.ID, plan, CellOpts{})
 	ser := cells.Series(1)
 	var sum int64
 	for _, r := range ser {
@@ -731,7 +731,7 @@ func TestProbeQueries(t *testing.T) {
 	s.FlushDue(clock)
 	flushW(t, s)
 	for _, tier := range []Tier{TierRaw, Tier1m, Tier1h} {
-		pc, err := s.ProbeCells(pid, "http", SinglePlan(t0, t0.Add(31*time.Minute), tier))
+		pc, err := s.ProbeCells(context.Background(), pid, "http", SinglePlan(t0, t0.Add(31*time.Minute), tier), CellOpts{})
 		if err != nil {
 			t.Fatal(err)
 		}

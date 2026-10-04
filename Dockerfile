@@ -54,7 +54,7 @@ COPY deploy/healthcheck.sh /usr/local/bin/pathwatch-healthcheck
 RUN chmod 0755 /usr/local/bin/pathwatch-healthcheck
 
 LABEL org.opencontainers.image.title="pathwatch" \
-      org.opencontainers.image.description="Self-hosted PingPlotter-style network path monitor: per-hop latency and loss timelines correlated with HTTP phase timing." \
+      org.opencontainers.image.description="Self-hosted network path analysis and monitoring tool: per-hop latency and loss timelines correlated with HTTP phase timing." \
       org.opencontainers.image.source="https://github.com/i-press-buttons/pathwatch" \
       org.opencontainers.image.url="https://github.com/i-press-buttons/pathwatch" \
       org.opencontainers.image.documentation="https://github.com/i-press-buttons/pathwatch/blob/main/docs/SYNOLOGY.md" \

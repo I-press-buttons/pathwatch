@@ -164,7 +164,7 @@ file again.
   "points": [[1759500000000, 12.3, 0.0], [1759500060000, null, null]]}]   // [ts, e2e_avg_ms, e2e_loss_pct]
 ```
 
-## PingPlotter-style hop grid
+## Hop grid
 
 `GET /api/targets/{id}/hops?range=…`: aggregates per TTL over the range (path at the end of the range)
 ```json

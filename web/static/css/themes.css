@@ -144,7 +144,7 @@
   --ev-route: #c9a0ff; --ev-alert: #ff5a5a; --ev-rl: #ffd400;
 }
 
-/* Classic (PingPlotter-like) */
+/* Classic (green/yellow/red) */
 :root[data-theme="classic"],
 .theme-preview[data-theme="classic"] {
   color-scheme: light;

@@ -1,6 +1,6 @@
 # Network Path Monitor: Project Spec
 
-A self-hosted, always-on network performance monitor in the spirit of PingPlotter. It continuously traces the path to a handful of destinations, records per-hop latency and loss, and also measures real HTTP/HTTPS request timing so that ICMP rate limiting on intermediate routers doesn't cause false alarms. A browser dashboard shows history, and webhook and email alerts flag anomalies.
+A self-hosted, always-on network performance monitor comparable in scope to commercial path-analysis tools. It continuously traces the path to a handful of destinations, records per-hop latency and loss, and also measures real HTTP/HTTPS request timing so that ICMP rate limiting on intermediate routers doesn't cause false alarms. A browser dashboard shows history, and webhook and email alerts flag anomalies.
 
 Project name: `pathwatch`.
 
@@ -523,10 +523,10 @@ These additions take precedence over earlier sections where they conflict.
 - **One volume, zero-config first run.** In Docker everything lives under `/data`: `/data/pathwatch.yaml` and `/data/pathwatch.db`. If the config file is missing, pathwatch writes a commented starter config with a few example targets (cloudflare.com with HTTP, 1.1.1.1, 8.8.8.8) and starts.
 - **Environment overrides** (handy in Portainer): `PATHWATCH_CONFIG` (default `/data/pathwatch.yaml` in the image), `PATHWATCH_DB` (overrides `storage.path`), `PATHWATCH_LISTEN` (overrides `listen`; image default `0.0.0.0:8095`), `PATHWATCH_PASSWORD` (Basic auth password, user defaults to `admin`), `PATHWATCH_USER`, `TZ`.
 - **Generated password.** If the bind is not loopback and no password is configured, pathwatch generates a random password on first start, stores it in `/data/.pathwatch-password`, and logs it prominently. This replaces "startup fails". Auth is still always on when the bind is not loopback.
-- **UI-managed targets (PingPlotter-style).** Targets can be added, paused, and removed in the UI (stored in the database, `source: ui`) in addition to config-file targets (`source: config`, read-only in the UI apart from pause). This revises the "UI is read-only" non-goal.
-- **PingPlotter-style views:** a hop grid (hop, IP, hostname, sent/lost, loss %, min/avg/max/cur/p95, jitter, classification, inline latency bar), the path timeline heatmap, and a latency/loss graph for the selected hop (default: destination). Clicking a hop row selects it. Also live updates via SSE.
+- **UI-managed targets.** Targets can be added, paused, and removed in the UI (stored in the database, `source: ui`) in addition to config-file targets (`source: config`, read-only in the UI apart from pause). This revises the "UI is read-only" non-goal.
+- **Path views:** a hop grid (hop, IP, hostname, sent/lost, loss %, min/avg/max/cur/p95, jitter, classification, inline latency bar), the path timeline heatmap, and a latency/loss graph for the selected hop (default: destination). Clicking a hop row selects it. Also live updates via SSE.
 - **MOS score** per target from latency, jitter, and loss (simplified ITU-T G.107 E-model), shown in summary cards and the overview.
-- **Themes.** Several built-in themes selectable in the UI and remembered per browser: Auto (follows `prefers-color-scheme`), Light, Dark, Midnight, Nord, Solarized Light, Solarized Dark, High Contrast, and Classic (PingPlotter-like green/yellow/red latency scale). Each theme defines its UI colors and its latency/loss color scale.
+- **Themes.** Several built-in themes selectable in the UI and remembered per browser: Auto (follows `prefers-color-scheme`), Light, Dark, Midnight, Nord, Solarized Light, Solarized Dark, High Contrast, and Classic (green/yellow/red latency scale). Each theme defines its UI colors and its latency/loss color scale.
 - **Image:** `ghcr.io/i-press-buttons/pathwatch`, multi-arch (linux/amd64, linux/arm64). Tags: `latest` from the default branch, `edge` from any other branch push, and semver tags on releases. Runs as root inside the container (simplest reliable raw-socket access on Synology kernels), with `network_mode: host` and `cap_add: [NET_RAW]`.
 - **API contract:** see [API.md](API.md).
 
@@ -561,7 +561,7 @@ Storage and precedence: UI edits are stored in the database (`settings` table an
 
 ## Related tools (for reference and a quick niche check)
 
-mtr and WinMTR (live per-hop, no history), Trippy (Rust TUI traceroute), Smokeping (long-term latency and jitter, no per-hop timeline), Prometheus blackbox_exporter with Grafana (history and alerting, no hop analysis), PingPlotter (the polished commercial reference). This project's niche is a self-hosted, always-on, per-hop timeline with HTTP phase correlation in a single easy-to-install binary with a built-in web UI.
+mtr and WinMTR (live per-hop, no history), Trippy (Rust TUI traceroute), Smokeping (long-term latency and jitter, no per-hop timeline), Prometheus blackbox_exporter with Grafana (history and alerting, no hop analysis), and commercial path-analysis tools. This project's niche is a self-hosted, always-on, per-hop timeline with HTTP phase correlation in a single easy-to-install binary with a built-in web UI.
 
 ## Milestones
 

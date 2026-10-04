@@ -1,6 +1,6 @@
 // Target page: summary cards, hop grid, path timeline heatmap, hop latency graph, HTTP phases, recent alerts.
 // All time-based panels share one time axis ({from,to} in ms) and refetch together on range/zoom changes.
-import { h, clear, isNum, fmtMs, fmtPct, fmtMos, fmtInt, fmtDateTime, fmtDuration, fmtAgo, fmtTime, clamp, throttle, lsGet, lsSet, toLocalInput, fromLocalInput, DASH, percentile } from '../util.js';
+import { h, clear, isNum, fmtMs, fmtPct, fmtMos, fmtInt, fmtDateTime, fmtDuration, fmtAgo, fmtTime, clamp, lsGet, lsSet, toLocalInput, fromLocalInput, DASH, percentile } from '../util.js';
 import { api, serverNow, onStream, onStreamState, getStreamState } from '../api.js';
 import { statusPill, panel, alertPill, deliveryPill, metricClass } from '../ui.js';
 import { Heatmap } from '../charts/heatmap.js';
@@ -9,7 +9,8 @@ import { PhasesChart } from '../charts/phases.js';
 import { openTargetEditor } from './target-editor.js';
 
 export const RANGES = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3, '90d': 90 * 86400e3 };
-const REFRESH_MS = 7000;
+const REFRESH_MS = 7000;        // live cadence of the summary cards (and the floor for the range panels)
+const PANEL_MAX_MS = 60000;     // live cadence ceiling of the range panels
 const HEAD_TIPS = { Count: 'Probes sent over the range', 'Loss %': 'Percent of probes without a reply. Intermediate hops may rate-limit ICMP.', Cur: 'Most recent reply', Jitter: 'Mean absolute difference of consecutive RTTs', Latency: 'Bar = average, whiskers = min to max' };
 
 export function mount(root, ctx) {
@@ -20,6 +21,10 @@ export function mount(root, ctx) {
   const seq = { targets: 0, hops: 0, timeline: 0, series: 0, probes: 0, alerts: 0 };
   let destroyed = false;
   const cleanups = [];
+  // In-flight requests, one controller per load: a newer load of the same kind (or abortAll) cancels the older one.
+  const inflight = new Map();
+  function begin(name) { const old = inflight.get(name); if (old) old.abort(); const c = new AbortController(); inflight.set(name, c); return c.signal; }
+  function abortAll() { for (const c of inflight.values()) c.abort(); inflight.clear(); }
 
   // ================= header + range controls =================
   const targetSel = h('select', { 'aria-label': 'Select target', onchange: () => ctx.navigate('/target/' + targetSel.value, currentQuery()) });
@@ -149,7 +154,7 @@ export function mount(root, ctx) {
     S.rangeKey = st.rangeKey; S.custom = st.custom; S.zoom = st.zoom; S.ttl = st.ttl;
     syncControls();
     if (rangeChanged) refreshAll();
-    else if (ttlChanged) { heat.setSelected(S.ttl); markSelected(); loadSeries(); }
+    else if (ttlChanged) { heat.setSelected(S.ttl); markSelected(); track([loadSeries()]); }
   }
 
   function syncControls() {
@@ -189,21 +194,22 @@ export function mount(root, ctx) {
 
   async function loadTargets() {
     const my = ++seq.targets;
+    lastCards = Date.now();
     try {
-      const list = await api.targets();
+      const list = await api.targets({ signal: begin('targets') });
       if (my !== seq.targets || destroyed) return;
       D.targets = list || [];
       D.target = D.targets.find((t) => t.id === id) || null;
       renderHeader(); renderCards(); renderHopNote();
       if (!D.target) { hopsP.showEmpty('Target not found.', 'It may have been deleted.'); }
-    } catch (e) { /* banner */ }
+    } catch (e) { /* banner; aborts are silent */ }
   }
 
   async function loadHops() {
     const my = ++seq.hops;
     hopsP.showLoading('Loading hops…');
     try {
-      const d = await api.hops(id, rangeParams());
+      const d = await api.hops(id, rangeParams(), { signal: begin('hops') });
       if (my !== seq.hops || destroyed) return;
       D.hops = d; hopsP.clearStale();
       renderHops();
@@ -213,9 +219,9 @@ export function mount(root, ctx) {
     const my = ++seq.timeline;
     heatP.showLoading('Loading path timeline…');
     try {
-      const d = await api.timeline(id, { ...rangeParams(), buckets: bucketCount() });
+      const d = await api.timeline(id, { ...rangeParams(), buckets: bucketCount() }, { signal: begin('timeline') });
       if (my !== seq.timeline || destroyed) return;
-      D.timeline = d; heatP.clearStale();
+      D.timeline = d; stepMs = d && d.step_ms > 0 ? d.step_ms : null; heatP.clearStale();
       renderHeat();
     } catch (e) { if (my === seq.timeline) failIn(heatP, e); }
   }
@@ -225,7 +231,7 @@ export function mount(root, ctx) {
     try {
       const p = { ...rangeParams(), buckets: bucketCount() };
       if (S.ttl != null) p.ttl = S.ttl;
-      const d = await api.series(id, p);
+      const d = await api.series(id, p, { signal: begin('series') });
       if (my !== seq.series || destroyed) return;
       D.series = d; latP.clearStale();
       renderLatency();
@@ -235,7 +241,7 @@ export function mount(root, ctx) {
     const my = ++seq.probes;
     phasesP.showLoading('Loading probes…');
     try {
-      const d = await api.probes(id, { ...rangeParams(), buckets: bucketCount() });
+      const d = await api.probes(id, { ...rangeParams(), buckets: bucketCount() }, { signal: begin('probes') });
       if (my !== seq.probes || destroyed) return;
       D.probes = d; phasesP.clearStale();
       renderProbes(); renderLatency();
@@ -244,28 +250,59 @@ export function mount(root, ctx) {
   async function loadAlerts() {
     const my = ++seq.alerts;
     try {
-      const d = await api.alerts({ target_id: id, limit: 8 });
+      const d = await api.alerts({ target_id: id, limit: 8 }, { signal: begin('alerts') });
       if (my !== seq.alerts || destroyed) return;
       D.alerts = d || []; alertsP.clearStale();
       renderAlerts();
     } catch (e) { if (my === seq.alerts) failIn(alertsP, e); }
   }
 
+  // Live refresh. Cards (/api/targets) follow REFRESH_MS; the range panels (hops, timeline, series, probes) only need to
+  // follow the bucket width: min(max(REFRESH_MS, step), PANEL_MAX_MS). Refreshes never overlap: a trigger that arrives while
+  // anything is still loading is remembered and becomes a single follow-up once the loads settle.
+  let stepMs = null;                 // step_ms of the last timeline for the current range
+  let lastCards = 0, lastPanels = 0; // when each group was last requested
+  let pending = 0, again = false, liveTimer = null;
+  const panelEvery = () => clamp(stepMs || (axis.to - axis.from) / bucketCount(), REFRESH_MS, PANEL_MAX_MS);
+  function track(jobs) {
+    pending++;
+    Promise.allSettled(jobs).then(() => { pending--; if (!pending && again && !destroyed) { again = false; scheduleLive(); } });
+  }
+  function cancelLive() { clearTimeout(liveTimer); liveTimer = null; again = false; }
+
   function refreshAll() {
+    abortAll(); cancelLive();
     Object.assign(axis, resolveAxis());
     updateZoomNote();
     heat.setAxis(axis);
     latency.redraw(); phases.redraw();
-    loadTargets(); loadHops(); loadTimeline(); loadSeries(); loadProbes(); loadAlerts();
+    stepMs = null;
+    lastPanels = Date.now();
+    track([loadTargets(), loadHops(), loadTimeline(), loadSeries(), loadProbes(), loadAlerts()]);
   }
-  /** live refresh: move the window forward and refetch the time-based panels */
+  /** live refresh: move the window forward and refetch whatever is due */
   function refreshLive() {
     if (!S.live || destroyed) return;
-    Object.assign(axis, resolveAxis());
-    updateZoomNote();
-    loadTargets(); loadHops(); loadTimeline(); loadSeries(); loadProbes();
+    if (pending) { again = true; return; }
+    const now = Date.now(), due = now + 50; // timers may fire a hair early
+    const cards = due - lastCards >= REFRESH_MS, panels = due - lastPanels >= panelEvery();
+    if (!cards && !panels) return;
+    const jobs = [];
+    if (cards) jobs.push(loadTargets());
+    if (panels) {
+      lastPanels = now;
+      Object.assign(axis, resolveAxis());
+      updateZoomNote();
+      jobs.push(loadHops(), loadTimeline(), loadSeries(), loadProbes());
+    }
+    track(jobs);
   }
-  const refreshLiveThrottled = throttle(refreshLive, REFRESH_MS);
+  /** arm one timer for the next due refresh; every event and the fallback poll just call this */
+  function scheduleLive() {
+    if (liveTimer || !S.live || destroyed) return;
+    const wait = Math.max(0, Math.min(lastCards + REFRESH_MS, lastPanels + panelEvery()) - Date.now());
+    liveTimer = setTimeout(() => { liveTimer = null; refreshLive(); }, wait);
+  }
 
   // ================= rendering =================
   function renderHeader() {
@@ -468,13 +505,13 @@ export function mount(root, ctx) {
   }
 
   // ================= live wiring =================
-  cleanups.push(onStream('round', (ev) => { if (ev.target_id !== id) return; if (S.live) { onRound(ev); refreshLiveThrottled(); } }));
-  cleanups.push(onStream('probe', (ev) => { if (ev.target_id !== id) return; if (S.live) refreshLiveThrottled(); }));
+  cleanups.push(onStream('round', (ev) => { if (ev.target_id !== id) return; if (S.live) { onRound(ev); scheduleLive(); } }));
+  cleanups.push(onStream('probe', (ev) => { if (ev.target_id !== id) return; if (S.live) scheduleLive(); }));
   cleanups.push(onStream('alert', (ev) => { if (!ev || ev.target_id === id) loadAlerts(); }));
   cleanups.push(onStream('targets', () => loadTargets()));
   cleanups.push(onStreamState(() => updateLive()));
   // fallback polling (also keeps live mode moving if the stream is unavailable)
-  const poll = setInterval(() => { if (S.live && getStreamState() !== 'open') refreshLive(); }, 10000);
+  const poll = setInterval(() => { if (S.live && getStreamState() !== 'open') scheduleLive(); }, 10000);
   const onResizeWin = () => { latency.onResize(); phases.onResize(); };
   window.addEventListener('resize', onResizeWin);
 
@@ -484,7 +521,7 @@ export function mount(root, ctx) {
     update(c) { applyRoute(c, false); },
     destroy() {
       destroyed = true;
-      clearInterval(poll); refreshLiveThrottled.cancel();
+      clearInterval(poll); cancelLive(); abortAll();
       window.removeEventListener('resize', onResizeWin);
       cleanups.forEach((f) => f());
       heat.destroy(); latency.destroy(); phases.destroy();

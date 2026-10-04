@@ -114,35 +114,63 @@ func (h *Hist) Encode() []byte {
 	return b
 }
 
-// DecodeHist parses Encode output. An empty blob yields an empty histogram.
-func DecodeHist(b []byte) (*Hist, error) {
-	h := &Hist{}
+var (
+	errHistHeader    = errors.New("hist: bad header")
+	errHistTruncated = errors.New("hist: truncated")
+	errHistRange     = errors.New("hist: index out of range")
+)
+
+// walkEncoded validates an Encode blob and calls add (when not nil) with the index and count
+// of every stored bucket. An empty blob has no buckets.
+func walkEncoded(b []byte, add func(i int, c uint32)) error {
 	if len(b) == 0 {
-		return h, nil
+		return nil
 	}
 	nz, n := binary.Uvarint(b)
 	if n <= 0 || nz > HistBuckets {
-		return nil, errors.New("hist: bad header")
+		return errHistHeader
 	}
 	b = b[n:]
 	idx := 0
 	for i := uint64(0); i < nz; i++ {
 		d, n1 := binary.Uvarint(b)
 		if n1 <= 0 {
-			return nil, errors.New("hist: truncated")
+			return errHistTruncated
 		}
 		b = b[n1:]
 		c, n2 := binary.Uvarint(b)
 		if n2 <= 0 {
-			return nil, errors.New("hist: truncated")
+			return errHistTruncated
 		}
 		b = b[n2:]
 		idx += int(d)
 		if idx < 0 || idx >= HistBuckets {
-			return nil, errors.New("hist: index out of range")
+			return errHistRange
 		}
-		h.C[idx] = uint32(c)
-		h.N += uint32(c)
+		if add != nil {
+			add(idx, uint32(c))
+		}
+	}
+	return nil
+}
+
+// MergeEncoded adds the counts of an Encode blob into h without building an intermediate
+// histogram. A malformed blob is rejected as DecodeHist rejects it and leaves h unchanged.
+func (h *Hist) MergeEncoded(b []byte) error {
+	if err := walkEncoded(b, nil); err != nil {
+		return err
+	}
+	return walkEncoded(b, func(i int, c uint32) {
+		h.C[i] += c
+		h.N += c
+	})
+}
+
+// DecodeHist parses Encode output. An empty blob yields an empty histogram.
+func DecodeHist(b []byte) (*Hist, error) {
+	h := &Hist{}
+	if err := h.MergeEncoded(b); err != nil {
+		return nil, err
 	}
 	return h, nil
 }

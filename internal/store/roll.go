@@ -21,6 +21,15 @@ func (r *Roll) Replies() int64 { return r.N - r.Lost }
 
 // AddReply records a reply. prev/havePrev give the previous reply's latency for jitter.
 func (r *Roll) AddReply(ms, prev float64, havePrev bool) {
+	r.addStats(ms, prev, havePrev)
+	if r.Hist == nil {
+		r.Hist = &Hist{}
+	}
+	r.Hist.Add(ms)
+}
+
+// addStats is AddReply without the histogram (quantiles then report ok=false).
+func (r *Roll) addStats(ms, prev float64, havePrev bool) {
 	if r.Replies() == 0 || ms < r.Min {
 		r.Min = ms
 	}
@@ -33,10 +42,6 @@ func (r *Roll) AddReply(ms, prev float64, havePrev bool) {
 		r.JitSum += math.Abs(ms - prev)
 		r.JitN++
 	}
-	if r.Hist == nil {
-		r.Hist = &Hist{}
-	}
-	r.Hist.Add(ms)
 }
 
 // AddLoss records a lost probe.
@@ -121,6 +126,35 @@ func rollFromRow(n, lost int64, min, avg, max, jitter float64, hist []byte) *Rol
 	return r
 }
 
+// mergeRow adds a stored 1m/1h rollup row into r. It is r.Merge(rollFromRow(...)) without the
+// intermediate Roll and Hist, so a row costs no allocation; an empty hist leaves r.Hist alone.
+func (r *Roll) mergeRow(n, lost int64, min, avg, max, jitter float64, hist []byte) {
+	if n == 0 {
+		return
+	}
+	if rep := n - lost; rep > 0 {
+		if r.Replies() == 0 || min < r.Min {
+			r.Min = min
+		}
+		if r.Replies() == 0 || max > r.Max {
+			r.Max = max
+		}
+		r.Sum += avg * float64(rep)
+		if rep > 1 {
+			r.JitN += rep - 1
+			r.JitSum += jitter * float64(rep-1)
+		}
+	}
+	r.N += n
+	r.Lost += lost
+	if len(hist) > 0 {
+		if r.Hist == nil {
+			r.Hist = &Hist{}
+		}
+		_ = r.Hist.MergeEncoded(hist) // a malformed blob adds no counts, as in rollFromRow
+	}
+}
+
 // ProbeRoll accumulates HTTP/TCP/DNS probe statistics for one (probe, bucket) cell.
 // Phase averages and the total are over successful samples only. Latencies in milliseconds.
 type ProbeRoll struct {
@@ -139,6 +173,15 @@ func (p *ProbeRoll) OK() int64 { return p.N - p.Errors }
 
 // AddOK records a successful sample.
 func (p *ProbeRoll) AddOK(dns, connect, tls, ttfb, transfer, total float64) {
+	p.addOKStats(dns, connect, tls, ttfb, transfer, total)
+	if p.Hist == nil {
+		p.Hist = &Hist{}
+	}
+	p.Hist.Add(total)
+}
+
+// addOKStats is AddOK without the histogram (quantiles then report ok=false).
+func (p *ProbeRoll) addOKStats(dns, connect, tls, ttfb, transfer, total float64) {
 	if p.OK() == 0 || total < p.TotalMin {
 		p.TotalMin = total
 	}
@@ -152,10 +195,6 @@ func (p *ProbeRoll) AddOK(dns, connect, tls, ttfb, transfer, total float64) {
 	p.TTFB += ttfb
 	p.Transfer += transfer
 	p.TotalSum += total
-	if p.Hist == nil {
-		p.Hist = &Hist{}
-	}
-	p.Hist.Add(total)
 }
 
 // AddError records a failed sample.
@@ -245,4 +284,38 @@ func probeRollFromRow(n, errors int64, dns, connect, tls, ttfb, transfer, tmin, 
 		p.Hist = &Hist{}
 	}
 	return p
+}
+
+// mergeRow adds a stored 1m/1h probe rollup row into p: p.Merge(probeRollFromRow(...)) without
+// the intermediate ProbeRoll and Hist.
+func (p *ProbeRoll) mergeRow(n, errors int64, dns, connect, tls, ttfb, transfer, tmin, tavg, tmax float64, hist []byte, cert int64) {
+	if n == 0 {
+		return
+	}
+	if ok := n - errors; ok > 0 {
+		if p.OK() == 0 || tmin < p.TotalMin {
+			p.TotalMin = tmin
+		}
+		if p.OK() == 0 || tmax > p.TotalMax {
+			p.TotalMax = tmax
+		}
+		f := float64(ok)
+		p.DNS += dns * f
+		p.Connect += connect * f
+		p.TLS += tls * f
+		p.TTFB += ttfb * f
+		p.Transfer += transfer * f
+		p.TotalSum += tavg * f
+	}
+	p.N += n
+	p.Errors += errors
+	if cert != 0 {
+		p.CertNotAfter = cert
+	}
+	if len(hist) > 0 {
+		if p.Hist == nil {
+			p.Hist = &Hist{}
+		}
+		_ = p.Hist.MergeEncoded(hist)
+	}
 }

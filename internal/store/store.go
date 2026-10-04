@@ -62,6 +62,9 @@ type Store struct {
 	dropped   atomic.Int64
 	lastWrit  atomic.Int64 // unix nanos of last successful writer commit
 
+	// writer-goroutine state: only the writer's transactions (op closures) touch it
+	hacc hourAcc // running 1h rollup of the current hour
+
 	agg *Aggregator
 
 	subMu sync.RWMutex
@@ -319,6 +322,7 @@ func (s *Store) runTx(batch []op) error {
 		}
 	}
 	if err := tx.Commit(); err != nil {
+		s.hacc.reset() // everything it folded in was lost with the transaction
 		return err
 	}
 	return nil

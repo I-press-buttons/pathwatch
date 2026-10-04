@@ -96,40 +96,96 @@ func (s *Store) RecordGap(targetID int64, from, to time.Time, reason string) {
 // ---------------------------------------------------------------------------
 // rollups
 
-func insertICMPRollRow(tx *sql.Tx, table string, target int64, bucket int64, ttl int, path int64, r *Roll) error {
-	avg, _ := r.Avg()
-	jit, _ := r.Jitter()
-	var min, max any
+const (
+	sqlInsertICMP1m  = `INSERT OR REPLACE INTO icmp_rollup_1m(target_id, bucket, ttl, path_id, n, lost, rtt_min, rtt_avg, rtt_max, jitter, hist) VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+	sqlInsertICMP1h  = `INSERT OR REPLACE INTO icmp_rollup_1h(target_id, bucket, ttl, path_id, n, lost, rtt_min, rtt_avg, rtt_max, jitter, hist) VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+	sqlInsertProbe1m = `INSERT OR REPLACE INTO probe_rollup_1m(probe_id, bucket, n, errors, dns_avg, connect_avg, tls_avg, ttfb_avg, transfer_avg, total_min, total_avg, total_max, hist, cert_not_after) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+	sqlInsertProbe1h = `INSERT OR REPLACE INTO probe_rollup_1h(probe_id, bucket, n, errors, dns_avg, connect_avg, tls_avg, ttfb_avg, transfer_avg, total_min, total_avg, total_max, hist, cert_not_after) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+
+	// one target's / probe's 1m rows of one hour, to seed the hour accumulator
+	sqlICMPHourRows  = `SELECT bucket, ttl, path_id, n, lost, rtt_min, rtt_avg, rtt_max, jitter, hist FROM icmp_rollup_1m WHERE target_id=? AND bucket >= ? AND bucket < ?`
+	sqlProbeHourRows = `SELECT bucket, n, errors, dns_avg, connect_avg, tls_avg, ttfb_avg, transfer_avg, total_min, total_avg, total_max, hist, cert_not_after FROM probe_rollup_1m WHERE probe_id=? AND bucket >= ? AND bucket < ? ORDER BY bucket`
+)
+
+// icmpCols is the column values of an ICMP rollup row. Min, avg, max and jitter are NULL
+// when there are no replies (or no consecutive replies), which reads back as 0.
+type icmpCols struct {
+	n, lost               int64
+	min, avg, max, jitter float64
+	hasStats, hasJitter   bool
+	hist                  []byte
+}
+
+func icmpColsOf(r *Roll) icmpCols {
+	c := icmpCols{n: r.N, lost: r.Lost, hist: r.Hist.Encode()}
 	if r.Replies() > 0 {
-		min, max = r.Min, r.Max
+		c.hasStats = true
+		c.min, c.max = r.Min, r.Max
+		c.avg, _ = r.Avg()
 	}
-	var avgv any
-	if r.Replies() > 0 {
-		avgv = avg
-	}
-	var jitv any
 	if r.JitN > 0 {
-		jitv = jit
+		c.hasJitter = true
+		c.jitter, _ = r.Jitter()
 	}
-	_, err := tx.Exec(`INSERT OR REPLACE INTO `+table+`(target_id, bucket, ttl, path_id, n, lost, rtt_min, rtt_avg, rtt_max, jitter, hist) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		target, bucket, ttl, path, r.N, r.Lost, min, avgv, max, jitv, r.Hist.Encode())
+	return c
+}
+
+// roll returns the Roll that reading the stored row back yields. The columns are lossy (the
+// mean replaces the sum, jitter is rescaled to replies-1 pairs), so the 1h rows are merged
+// from this form and not from the in-memory roll.
+func (c icmpCols) roll() *Roll {
+	return rollFromRow(c.n, c.lost, c.min, c.avg, c.max, c.jitter, c.hist)
+}
+
+func (s *Store) insertICMPRollRow(tx *sql.Tx, q string, target int64, bucket int64, ttl int, path int64, c icmpCols) error {
+	var min, avg, max, jit any
+	if c.hasStats {
+		min, avg, max = c.min, c.avg, c.max
+	}
+	if c.hasJitter {
+		jit = c.jitter
+	}
+	_, err := tx.Exec(q, target, bucket, ttl, path, c.n, c.lost, min, avg, max, jit, c.hist)
 	return err
 }
 
-func insertProbeRollRow(tx *sql.Tx, table string, probe int64, bucket int64, p *ProbeRoll) error {
-	var dns, conn, tls, ttfb, tr, tmin, tavg, tmax any
+// probeCols is the column values of a probe rollup row; the phase columns are NULL without
+// successful samples.
+type probeCols struct {
+	n, errors                                           int64
+	dns, connect, tls, ttfb, transfer, tmin, tavg, tmax float64
+	hasStats                                            bool
+	cert                                                int64
+	hist                                                []byte
+}
+
+func probeColsOf(p *ProbeRoll) probeCols {
+	c := probeCols{n: p.N, errors: p.Errors, cert: p.CertNotAfter, hist: p.Hist.Encode()}
 	if p.OK() > 0 {
-		dns, _ = p.AvgDNS()
-		conn, _ = p.AvgConnect()
-		tls, _ = p.AvgTLS()
-		ttfb, _ = p.AvgTTFB()
-		tr, _ = p.AvgTransfer()
-		tavg, _ = p.AvgTotal()
-		tmin, tmax = p.TotalMin, p.TotalMax
+		c.hasStats = true
+		c.dns, _ = p.AvgDNS()
+		c.connect, _ = p.AvgConnect()
+		c.tls, _ = p.AvgTLS()
+		c.ttfb, _ = p.AvgTTFB()
+		c.transfer, _ = p.AvgTransfer()
+		c.tavg, _ = p.AvgTotal()
+		c.tmin, c.tmax = p.TotalMin, p.TotalMax
 	}
-	_, err := tx.Exec(`INSERT OR REPLACE INTO `+table+`(probe_id, bucket, n, errors, dns_avg, connect_avg, tls_avg, ttfb_avg, transfer_avg, total_min, total_avg, total_max, hist, cert_not_after)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		probe, bucket, p.N, p.Errors, dns, conn, tls, ttfb, tr, tmin, tavg, tmax, p.Hist.Encode(), nullInt(p.CertNotAfter))
+	return c
+}
+
+// roll is icmpCols.roll for probes.
+func (c probeCols) roll() *ProbeRoll {
+	return probeRollFromRow(c.n, c.errors, c.dns, c.connect, c.tls, c.ttfb, c.transfer, c.tmin, c.tavg, c.tmax, c.hist, c.cert)
+}
+
+func (s *Store) insertProbeRollRow(tx *sql.Tx, q string, probe int64, bucket int64, c probeCols) error {
+	var dns, conn, tls, ttfb, tr, tmin, tavg, tmax any
+	if c.hasStats {
+		dns, conn, tls, ttfb, tr = c.dns, c.connect, c.tls, c.ttfb, c.transfer
+		tmin, tavg, tmax = c.tmin, c.tavg, c.tmax
+	}
+	_, err := tx.Exec(q, probe, bucket, c.n, c.errors, dns, conn, tls, ttfb, tr, tmin, tavg, tmax, c.hist, nullInt(c.cert))
 	return err
 }
 
@@ -140,66 +196,250 @@ func nullInt(v int64) any {
 	return v
 }
 
-// persistMinute writes a completed minute as 1m rollups and rebuilds the affected 1h rollups.
+const hourUs = int64(time.Hour / time.Microsecond)
+
+// hourAcc is the running merge of the current hour's 1m rollup rows, so that persisting a
+// minute folds just that minute in instead of re-reading and decoding every 1m row of the hour
+// (quadratic over the hour). It is touched only by writer-goroutine closures (persistMinutes,
+// DeleteTarget), which run one at a time, so it needs no lock. It is a cache of the 1m table:
+// whenever it may disagree with it, reset or reseed it from the table.
+type hourAcc struct {
+	hour   int64 // µs, start of the accumulated hour
+	icmp   map[int64]*icmpAcc
+	probes map[int64]*probeAcc
+}
+
+// pathTTL identifies one cell (hop on a path) of a target within the hour.
+type pathTTL struct {
+	path int64
+	ttl  int
+}
+
+// icmpAcc is one target's hour. It exists only once seeded from the 1m table.
+type icmpAcc struct {
+	last  int64 // newest 1m bucket (µs) this target has in the table for the hour
+	rolls map[pathTTL]*Roll
+	dirty map[pathTTL]bool // cells whose 1h row is not written yet
+}
+
+// probeAcc is one probe's hour.
+type probeAcc struct {
+	last  int64
+	roll  *ProbeRoll
+	dirty bool
+}
+
+func (a *hourAcc) reset() { *a = hourAcc{} }
+
+func (a *hourAcc) start(hour int64) {
+	a.hour = hour
+	a.icmp = map[int64]*icmpAcc{}
+	a.probes = map[int64]*probeAcc{}
+}
+
+// persistMinute writes a completed minute as 1m rollups and updates the affected 1h rollups.
 func (s *Store) persistMinute(mb MinuteBatch) { s.persistMinutes([]MinuteBatch{mb}) }
 
-// persistMinutes writes several minutes in one writer operation and rebuilds each affected
-// hour once, from the 1m rows, inside the writer so reads see consistent data.
+// persistMinutes writes several minutes in one writer operation, folding each into its hour's
+// accumulator and writing the touched 1h rows once per hour, inside the writer so reads see
+// consistent data.
 func (s *Store) persistMinutes(mbs []MinuteBatch) {
-	type hourSet struct {
-		targets, probes map[int64]bool
-	}
-	hours := map[int64]*hourSet{}
 	n := 0
 	for _, mb := range mbs {
-		if len(mb.ICMP) == 0 && len(mb.Probes) == 0 {
-			continue
-		}
-		n++
-		h := mb.Bucket.Truncate(time.Hour).UnixMicro()
-		hs := hours[h]
-		if hs == nil {
-			hs = &hourSet{targets: map[int64]bool{}, probes: map[int64]bool{}}
-			hours[h] = hs
-		}
-		for _, r := range mb.ICMP {
-			hs.targets[r.TargetID] = true
-		}
-		for _, p := range mb.Probes {
-			hs.probes[p.ProbeID] = true
+		if len(mb.ICMP) > 0 || len(mb.Probes) > 0 {
+			n++
 		}
 	}
 	if n == 0 {
 		return
 	}
-	s.enqueue(func(tx *sql.Tx) error {
+	s.enqueue(func(tx *sql.Tx) (err error) {
+		defer func() {
+			if err != nil {
+				s.hacc.reset() // may hold minutes this transaction did not write
+			}
+		}()
 		for _, mb := range mbs {
-			for _, r := range mb.ICMP {
-				if err := insertICMPRollRow(tx, "icmp_rollup_1m", r.TargetID, r.Bucket, r.TTL, r.PathID, r.Roll); err != nil {
-					return err
-				}
+			if len(mb.ICMP) == 0 && len(mb.Probes) == 0 {
+				continue
 			}
-			for _, p := range mb.Probes {
-				if err := insertProbeRollRow(tx, "probe_rollup_1m", p.ProbeID, p.Bucket, p.Roll); err != nil {
-					return err
-				}
-			}
-		}
-		for h, hs := range hours {
-			if err := rebuildHour(tx, h, keys(hs.targets), keys(hs.probes)); err != nil {
+			if err := s.persistMinuteTx(tx, mb); err != nil {
 				return err
 			}
 		}
-		return nil
+		return s.flushHour(tx)
 	})
 }
 
-func keys(m map[int64]bool) []int64 {
-	out := make([]int64, 0, len(m))
-	for k := range m {
-		out = append(out, k)
+// persistMinuteTx inserts the minute's 1m rows and brings the hour accumulator up to date.
+//
+// A target (probe) is folded incrementally when it is seeded and the minute is newer than
+// every 1m row it has for the hour: the insert then replaced nothing, and merging the rows in
+// bucket order gives exactly what rebuilding the hour from the 1m table would. Otherwise (first
+// minute of the hour or process, or a minute persisted again, e.g. after a late sample) it is
+// reseeded from the table, which already holds this minute's rows.
+func (s *Store) persistMinuteTx(tx *sql.Tx, mb MinuteBatch) error {
+	hour := mb.Bucket.Truncate(time.Hour).UnixMicro()
+	a := &s.hacc
+	if a.icmp == nil || a.hour != hour {
+		if err := s.flushHour(tx); err != nil {
+			return err
+		}
+		a.start(hour)
 	}
-	return out
+	bucket := mb.Bucket.UnixMicro()
+	foldICMP := map[int64]bool{}
+	for _, r := range mb.ICMP {
+		ok, seen := foldICMP[r.TargetID]
+		if !seen {
+			t := a.icmp[r.TargetID]
+			ok = t != nil && bucket > t.last
+		}
+		// the Aggregator never emits a cell twice in a minute, so duplicates are not checked
+		foldICMP[r.TargetID] = ok && r.Bucket == bucket
+	}
+	foldProbe := map[int64]bool{}
+	for _, p := range mb.Probes {
+		_, seen := foldProbe[p.ProbeID]
+		t := a.probes[p.ProbeID]
+		foldProbe[p.ProbeID] = !seen && t != nil && bucket > t.last && p.Bucket == bucket
+	}
+
+	for _, r := range mb.ICMP {
+		c := icmpColsOf(r.Roll)
+		if err := s.insertICMPRollRow(tx, sqlInsertICMP1m, r.TargetID, r.Bucket, r.TTL, r.PathID, c); err != nil {
+			return err
+		}
+		if foldICMP[r.TargetID] {
+			t := a.icmp[r.TargetID]
+			k := pathTTL{r.PathID, r.TTL}
+			m := t.rolls[k]
+			if m == nil {
+				m = &Roll{}
+				t.rolls[k] = m
+			}
+			m.Merge(c.roll())
+			t.dirty[k] = true
+			t.last = bucket
+		}
+	}
+	for _, p := range mb.Probes {
+		c := probeColsOf(p.Roll)
+		if err := s.insertProbeRollRow(tx, sqlInsertProbe1m, p.ProbeID, p.Bucket, c); err != nil {
+			return err
+		}
+		if foldProbe[p.ProbeID] {
+			t := a.probes[p.ProbeID]
+			t.roll.Merge(c.roll())
+			t.dirty = true
+			t.last = bucket
+		}
+	}
+
+	for id, ok := range foldICMP {
+		if !ok {
+			if err := s.seedICMP(tx, id); err != nil {
+				return err
+			}
+		}
+	}
+	for id, ok := range foldProbe {
+		if !ok {
+			if err := s.seedProbe(tx, id); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// seedICMP (re)builds one target's accumulator from its 1m rows of the current hour and marks
+// all its cells for a 1h write.
+func (s *Store) seedICMP(tx *sql.Tx, target int64) error {
+	hour := s.hacc.hour
+	rows, err := tx.Query(sqlICMPHourRows, target, hour, hour+hourUs)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	t := &icmpAcc{rolls: map[pathTTL]*Roll{}, dirty: map[pathTTL]bool{}}
+	for rows.Next() {
+		var b, p, n, lost int64
+		var ttl int
+		var mn, av, mx, jt sql.NullFloat64
+		var hist []byte
+		if err := rows.Scan(&b, &ttl, &p, &n, &lost, &mn, &av, &mx, &jt, &hist); err != nil {
+			return err
+		}
+		k := pathTTL{p, ttl}
+		m := t.rolls[k]
+		if m == nil {
+			m = &Roll{}
+			t.rolls[k] = m
+		}
+		m.Merge(rollFromRow(n, lost, mn.Float64, av.Float64, mx.Float64, jt.Float64, hist))
+		t.dirty[k] = true
+		if b > t.last {
+			t.last = b
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	s.hacc.icmp[target] = t
+	return nil
+}
+
+// seedProbe is seedICMP for one probe.
+func (s *Store) seedProbe(tx *sql.Tx, probe int64) error {
+	hour := s.hacc.hour
+	rows, err := tx.Query(sqlProbeHourRows, probe, hour, hour+hourUs)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	t := &probeAcc{roll: &ProbeRoll{}, dirty: true}
+	for rows.Next() {
+		var b, n, e int64
+		var dns, conn, tls, ttfb, tr, tmin, tavg, tmax sql.NullFloat64
+		var hist []byte
+		var cert sql.NullInt64
+		if err := rows.Scan(&b, &n, &e, &dns, &conn, &tls, &ttfb, &tr, &tmin, &tavg, &tmax, &hist, &cert); err != nil {
+			return err
+		}
+		t.roll.Merge(probeRollFromRow(n, e, dns.Float64, conn.Float64, tls.Float64, ttfb.Float64, tr.Float64, tmin.Float64, tavg.Float64, tmax.Float64, hist, cert.Int64))
+		if b > t.last {
+			t.last = b
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	s.hacc.probes[probe] = t
+	return nil
+}
+
+// flushHour writes the 1h rows of the accumulator's cells that changed since the last flush.
+func (s *Store) flushHour(tx *sql.Tx) error {
+	a := &s.hacc
+	for id, t := range a.icmp {
+		for k := range t.dirty {
+			if err := s.insertICMPRollRow(tx, sqlInsertICMP1h, id, a.hour, k.ttl, k.path, icmpColsOf(t.rolls[k])); err != nil {
+				return err
+			}
+			delete(t.dirty, k)
+		}
+	}
+	for id, t := range a.probes {
+		if !t.dirty {
+			continue
+		}
+		if err := s.insertProbeRollRow(tx, sqlInsertProbe1h, id, a.hour, probeColsOf(t.roll)); err != nil {
+			return err
+		}
+		t.dirty = false
+	}
+	return nil
 }
 
 func inClause(ids []int64) (string, []any) {
@@ -213,90 +453,6 @@ func inClause(ids []int64) (string, []any) {
 		args[i] = id
 	}
 	return "(" + strings.Join(ph, ",") + ")", args
-}
-
-// rebuildHour recomputes the 1h rollups of the given targets/probes for the hour starting at
-// hourUs from their 1m rows.
-func rebuildHour(tx *sql.Tx, hourUs int64, targets, probes []int64) error {
-	end := hourUs + int64(time.Hour/time.Microsecond)
-	if len(targets) > 0 {
-		in, args := inClause(targets)
-		rows, err := tx.Query(`SELECT target_id, ttl, path_id, n, lost, rtt_min, rtt_avg, rtt_max, jitter, hist FROM icmp_rollup_1m
-			WHERE bucket >= ? AND bucket < ? AND target_id IN `+in, append([]any{hourUs, end}, args...)...)
-		if err != nil {
-			return err
-		}
-		type k struct {
-			t, p int64
-			ttl  int
-		}
-		merged := map[k]*Roll{}
-		for rows.Next() {
-			var t, p, n, lost int64
-			var ttl int
-			var mn, av, mx, jt sql.NullFloat64
-			var hist []byte
-			if err := rows.Scan(&t, &ttl, &p, &n, &lost, &mn, &av, &mx, &jt, &hist); err != nil {
-				rows.Close()
-				return err
-			}
-			r := rollFromRow(n, lost, mn.Float64, av.Float64, mx.Float64, jt.Float64, hist)
-			key := k{t, p, ttl}
-			m := merged[key]
-			if m == nil {
-				m = &Roll{}
-				merged[key] = m
-			}
-			m.Merge(r)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		rows.Close()
-		for key, r := range merged {
-			if err := insertICMPRollRow(tx, "icmp_rollup_1h", key.t, hourUs, key.ttl, key.p, r); err != nil {
-				return err
-			}
-		}
-	}
-	if len(probes) > 0 {
-		in, args := inClause(probes)
-		rows, err := tx.Query(`SELECT probe_id, n, errors, dns_avg, connect_avg, tls_avg, ttfb_avg, transfer_avg, total_min, total_avg, total_max, hist, cert_not_after FROM probe_rollup_1m
-			WHERE bucket >= ? AND bucket < ? AND probe_id IN `+in+` ORDER BY bucket`, append([]any{hourUs, end}, args...)...)
-		if err != nil {
-			return err
-		}
-		merged := map[int64]*ProbeRoll{}
-		for rows.Next() {
-			var id, n, e int64
-			var dns, conn, tls, ttfb, tr, tmin, tavg, tmax sql.NullFloat64
-			var hist []byte
-			var cert sql.NullInt64
-			if err := rows.Scan(&id, &n, &e, &dns, &conn, &tls, &ttfb, &tr, &tmin, &tavg, &tmax, &hist, &cert); err != nil {
-				rows.Close()
-				return err
-			}
-			r := probeRollFromRow(n, e, dns.Float64, conn.Float64, tls.Float64, ttfb.Float64, tr.Float64, tmin.Float64, tavg.Float64, tmax.Float64, hist, cert.Int64)
-			m := merged[id]
-			if m == nil {
-				m = &ProbeRoll{}
-				merged[id] = m
-			}
-			m.Merge(r)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		rows.Close()
-		for id, p := range merged {
-			if err := insertProbeRollRow(tx, "probe_rollup_1h", id, hourUs, p); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +647,7 @@ func boolInt(b bool) int {
 // DeleteTarget removes a target and all of its data.
 func (s *Store) DeleteTarget(id int64) error {
 	return s.exec(func(tx *sql.Tx) error {
+		s.hacc.reset() // target and probe ids can be reused; the hour accumulator must not outlive their rows
 		var probeIDs []int64
 		rows, err := tx.Query(`SELECT id FROM probes WHERE target_id=?`, id)
 		if err != nil {

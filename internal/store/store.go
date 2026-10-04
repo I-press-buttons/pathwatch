@@ -120,7 +120,10 @@ func Open(path string, o Options) (*Store, error) {
 		wdb.Close()
 		return nil, err
 	}
+	// keep every pooled connection open: with the default of 2 idle ones, the UI's parallel
+	// requests would keep closing and reopening connections
 	rdb.SetMaxOpenConns(4)
+	rdb.SetMaxIdleConns(4)
 	s := &Store{
 		wdb: wdb, rdb: rdb, opts: o, log: o.Logger, now: o.Now,
 		ops:    make(chan op, 8192),

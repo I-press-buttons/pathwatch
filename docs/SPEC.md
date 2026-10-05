@@ -25,7 +25,7 @@ Project name: `pathwatch`.
 - A native desktop GUI.
 - Packet capture or deep packet inspection.
 - Editing secrets, notification channels, maintenance windows or server settings (listen, TLS, storage) from the UI. Targets, probe settings, alert thresholds and DNS probes are editable, see [Settings edited in the UI](#settings-edited-in-the-ui).
-- Data export / ISP report generation and a Prometheus `/metrics` endpoint (possible later, not planned).
+- Data export / ISP report generation (possible later, not planned).
 
 ## Key design decisions
 
@@ -284,6 +284,7 @@ All times are stored in UTC and displayed in the browser's local timezone.
 - **DNS-rebinding protection.** While authentication is off, requests whose `Host` header is not `localhost`, an address in `127.0.0.0/8`, `::1`, or the host of `public_url` are rejected with `421 Misdirected Request`. `X-Forwarded-Host` is deliberately not trusted for this check. A local reverse proxy in front of an auth-less loopback instance therefore needs its public hostname in `public_url` (or, better, a password, which turns authentication on and this check off).
 - **Security headers.** Every response carries `Content-Security-Policy` (with `frame-ancestors 'none'`), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`, so the UI cannot be framed. `Strict-Transport-Security` is added only when built-in TLS is enabled.
 - **CSRF model.** The API is same-origin only. Every request with a method other than GET, HEAD or OPTIONS passes the `sameOrigin` check: it is accepted when `Sec-Fetch-Site` is `same-origin` or `none` and refused when it is `cross-site` or `same-site`. When the header is absent (older browsers) the `Origin` header, if present, must match `Host`, the first `X-Forwarded-Host` value, or the host of `public_url`; requests without an `Origin` (curl, scripts) pass. Endpoints that take a body (targets, settings, silences) also require `Content-Type: application/json`, which blocks simple cross-site form posts; body-less ones (DELETE, pause/resume) rely on `sameOrigin` alone. Reverse-proxy users should set `public_url` and forward `X-Forwarded-Host`, since both feed this check.
+- **Prometheus `/metrics`.** Opt-in (`metrics.enabled`, default false; 404 when off). It is an ordinary route behind the same middleware as `/api/*`: Basic auth (only `/healthz` is exempt), the Host/DNS-rebinding check, security headers and the failed-login limiter. Details in [docs/API.md](API.md#prometheus-metrics).
 - Passwords are compared in constant time.
 - `public_url` (for example `https://nas.local:8080`) builds deep links in alerts. Without it, alerts omit the link.
 - Never log secrets.
@@ -375,6 +376,9 @@ log:
   level: info                         # debug | info | warn | error
   format: text                        # text | json
   file: ""                            # optional; rotated by size
+
+metrics:
+  enabled: false                      # Prometheus GET /metrics, behind the same auth as the API
 
 storage:
   path: ./pathwatch.db                # must be on a local filesystem
@@ -594,7 +598,7 @@ mtr and WinMTR (live per-hop, no history), Trippy (Rust TUI traceroute), Smokepi
 5. **Web UI:** overview page, target page (summary cards, canvas path timeline, HTTP phases chart), ranges 1h to 90d plus custom, drag-to-zoom, SSE live updates, Basic auth, optional TLS.
 6. **Alerting:** hop classifier, local-outage detection, rule engine with baselines (cold start, freeze, `min_delta`), hysteresis and cooldown, persistent outbox with retry, webhook presets and email, silences and maintenance windows, heartbeat, alerts feed in the UI.
 7. **Packaging and Windows:** Windows prober (`IcmpSendEcho2`) tested on Windows 10/11, native Windows service, systemd unit, GoReleaser binaries, README with screenshots.
-8. **Later:** IPv6 prober, UDP and TCP-SYN trace modes, ASN and rDNS enrichment polish, full config hot reload, possibly export/ISP report and Prometheus metrics.
+8. **Later:** IPv6 prober, UDP and TCP-SYN trace modes, ASN and rDNS enrichment polish, full config hot reload, possibly export/ISP report. (Prometheus `/metrics` is implemented, opt-in.)
 
 ## Instructions for the coding agent
 
@@ -625,6 +629,6 @@ Decisions made:
 - Primary deployment: **Docker on NAS/server**. The Docker milestone moved to 4, the Windows prober moved to 7, and armv7 builds were added.
 - IPv4 first with a family-agnostic design; IPv6 prober later.
 - Added scope: overview page, 30d/90d/custom ranges with drag-to-zoom, TLS cert-expiry rule, DNS resolver probe, silences and maintenance windows, optional heartbeat.
-- Not planned: export/ISP report, Prometheus metrics.
+- Not planned: export/ISP report.
 - Remote access: Basic auth required off loopback, optional built-in TLS; no unauthenticated mode.
 - License: MIT.

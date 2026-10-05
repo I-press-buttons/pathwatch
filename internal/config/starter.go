@@ -43,6 +43,9 @@ enrich:
   reverse_dns: true
   # asn_db: GeoLite2-ASN.mmdb             # optional, user-supplied MaxMind database
 
+# metrics:                                # Prometheus endpoint GET /metrics (off by default)
+#   enabled: false                        # same Basic auth as the API; see the README for a scrape_config
+
 defaults:                                 # inherited by every target/probe
   icmp_interval: 2s
   icmp_timeout: 2s

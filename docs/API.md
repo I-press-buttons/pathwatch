@@ -30,6 +30,24 @@ Resolution tier is chosen by the server: raw rounds for ranges ≤ 6h, 1-minute 
 }
 ```
 
+## Prometheus metrics
+
+`GET /metrics` (opt-in: `metrics.enabled: true`, otherwise `404`). Same auth and middleware as `/api/*`.
+Prometheus text format 0.0.4 (`Content-Type: text/plain; version=0.0.4; charset=utf-8`). Values are over
+the last 5 minutes of the 1-minute rollups; seconds and 0..1 ratios; no sample is emitted without data.
+Label values are escaped (`\\`, `\"`, `\n`). Hops are labelled by `ttl`, never by address.
+
+| Metric | Labels |
+|---|---|
+| `pathwatch_target_up`, `_paused`, `_loss_ratio`, `_rtt_avg_seconds`, `_rtt_min_seconds`, `_rtt_max_seconds`, `_rtt_p95_seconds`, `_jitter_seconds`, `_mos`, `_hops` | `target`, `host` |
+| `pathwatch_hop_loss_ratio`, `pathwatch_hop_rtt_avg_seconds` | `target`, `ttl` |
+| `pathwatch_probe_total_seconds`, `_dns_seconds`, `_connect_seconds`, `_tls_seconds`, `_ttfb_seconds`, `_transfer_seconds`, `_error_ratio`, `_http_status`, `_cert_expiry_timestamp_seconds` | `target`, `probe`, `type` |
+| `pathwatch_alerts_active`, `pathwatch_outbox_pending` | none |
+| `pathwatch_build_info` | `version` (value 1) |
+
+`target_up`/`target_loss_ratio` use the destination (ICMP, else the TCP or HTTP probe); they are omitted
+when only the last responding hop is available (its loss is often rate limiting). DNS probes are not exported.
+
 ## Targets
 
 `GET /api/targets`

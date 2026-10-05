@@ -54,6 +54,17 @@ The image runs as root (raw ICMP sockets work most reliably that way on Synology
 - **Non-root (advanced, not the default).** You can run with `user: "<uid>:<gid>"`, but the image has no file capability on the binary, so a non-root process gets no effective `NET_RAW` and raw ICMP fails; it only works with unprivileged datagram ICMP where the host's `net.ipv4.ping_group_range` allows it (often not enabled on Synology). The data folder must be owned by that uid. If you build your own image with `setcap cap_net_raw+ep` on the binary, do not combine that with `no-new-privileges` unless you have verified it on your runtime: file capabilities can be ignored under `no_new_privs` depending on the Docker/runc version, and with `+ep` a container started without `NET_RAW` in its bounding set will refuse to execute the binary at all.
 - `NET_RAW` on the host network also allows raw packet sockets on all host interfaces. That is inherent to raw ICMP mode.
 
+## Security
+
+- The web UI uses HTTP Basic auth. Over plain HTTP (the Docker default, `0.0.0.0:8095`) the password is sent in clear text with every request. Use it that way only on a network you trust, and do not forward port 8095 from the internet.
+- For remote access use a VPN, an HTTPS reverse proxy (Caddy, Traefik, Synology's built-in reverse proxy), or built-in TLS (`tls.cert_file` / `tls.key_file`). With built-in TLS the image's plain-HTTP healthcheck fails; override `healthcheck:` in your compose file (for example `wget -q --no-check-certificate -O- https://127.0.0.1:8095/healthz`) or terminate TLS in a reverse proxy instead.
+- Set `PATHWATCH_PASSWORD` yourself, and make it at least 12 characters (a shorter one logs a startup warning). A generated password is printed to the container log, where anyone with log access can read it, and stored in `/data/.pathwatch-password` (mode 0600).
+- On a loopback bind (for example `PATHWATCH_LISTEN=127.0.0.1:8095` behind a reverse proxy on the same machine) authentication is off unless `PATHWATCH_PASSWORD` is set, so set it. While auth is off, requests whose `Host` header is not `localhost`, a loopback IP or the `public_url` host are rejected with `421` (DNS-rebinding protection). A local reverse proxy in front of an auth-less instance must therefore have its public hostname in `public_url`; `X-Forwarded-Host` is not trusted for this check.
+- Every response carries `Content-Security-Policy` (including `frame-ancestors 'none'`), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`, so the UI cannot be framed by another site. `Strict-Transport-Security` is sent only with built-in TLS.
+- Failed login attempts are rate-limited per client IP (`429` with `Retry-After`) and logged at warn level as `authentication failed`, which fail2ban or similar can watch for. Behind a reverse proxy all clients may appear as the proxy's address, so limit access at the proxy too.
+- State-changing API calls (POST/PUT/PATCH/DELETE) are refused when cross-site, and endpoints with a body require `Content-Type: application/json`. Behind a reverse proxy, set `public_url` so the origin check matches the public address.
+- Webhook `body_template`s are not escaped automatically; see the template rules in [docs/SPEC.md](docs/SPEC.md#channels).
+
 ## Documentation
 
 - [docs/SYNOLOGY.md](docs/SYNOLOGY.md): Synology + Portainer deployment

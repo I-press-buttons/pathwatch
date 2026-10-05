@@ -105,6 +105,8 @@ Use `net/http/httptrace` to capture, per request: DNS lookup, TCP connect, TLS h
 - **Proxy environment variables are ignored by default** (`HTTP_PROXY`, `HTTPS_PROXY`), otherwise we would be measuring the proxy. Opt in with `use_env_proxy: true`.
 - Method GET or HEAD. For GET, the body is read and discarded up to `max_body` (default 1 MiB) to measure transfer time.
 - Optional: `expect_status` (one code or a list), `timeout`, `follow_redirects` (default false), custom `headers`, `user_agent` (default `pathwatch/<version>`), `insecure_skip_verify` for internal targets.
+- **Header secrets:** `headers` values may reference environment variables as `${NAME}`, expanded when each request is built and never stored or returned expanded (the definition keeps the `${...}` text). Only names starting with `PATHWATCH_PROBE_` are readable; a reference to any other variable (`PATHWATCH_PASSWORD`, the SMTP password, ...) expands to the empty string, because targets can be created through the API and must not be able to exfiltrate other secrets. Write `$$` for a literal `$`. A literal value still works but is stored as written (in the YAML file or the database), so prefer `Authorization: Bearer ${PATHWATCH_PROBE_TOKEN}`.
+- **Header handling elsewhere:** `GET /api/targets/{id}/config` replaces literal header values with `********` (values that are only `${...}` references, optionally after `Bearer`/`Basic`/`Token`, stay visible); a `PUT` that sends `********` keeps the stored value for the same probe (method + URL) and header name, and is rejected with "re-enter the header value" if the probe's URL or method changed. When following redirects, the configured headers are dropped from any hop whose scheme, host or port differs from the original URL. A password in the URL (`https://user:pass@host/`) is masked in the probe label, but still part of the probe key; prefer headers.
 - When following redirects, phase timings are those of the first request; `total` covers the whole chain; the final URL and redirect count are recorded.
 - The DNS phase uses the system resolver. When `pin_ip` is on (the default), the DNS phase reflects the per-cycle resolution. Note that the OS resolver cache usually makes it near-zero. For real resolver health, use the DNS probe.
 - **TLS certificate expiry:** record the leaf certificate's `NotAfter` on every HTTPS probe; the `cert_expiry` alert rule warns ahead of expiry.
@@ -488,7 +490,8 @@ Config rules:
 - Target `name` is the stable identity in the database. Renaming a target starts a new history, so the README says so. Changing `host` starts a new path version.
 - Targets removed from config keep their data and are marked inactive (hidden by default, shown with a toggle).
 - Config changes take effect on restart (or `SIGHUP` on Linux, which reloads targets, rules, and channels). Full hot reload is a later item.
-- Secrets are only read from environment variables, never inline.
+- Secrets are read from environment variables, never inline (probe header values can opt in with `${PATHWATCH_PROBE_*}`; see HTTP/HTTPS probes).
+- New data directories are created `0700`, and the database and starter config `0600`. Existing files keep their mode; a startup warning is logged when the config or database is readable by group or others.
 
 ## Distribution
 

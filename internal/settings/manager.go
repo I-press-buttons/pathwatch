@@ -416,6 +416,11 @@ type TargetDef struct {
 
 // Target returns the definition of a stored target, normalized for editing.
 func (m *Manager) Target(row store.TargetRow) (TargetDef, error) {
+	return m.targetDef(row, m.File())
+}
+
+// targetDef is Target with the file configuration given, for callers holding m.mu.
+func (m *Manager) targetDef(row store.TargetRow, file *config.Config) (TargetDef, error) {
 	eff := m.Effective()
 	def := TargetDef{Source: row.Source}
 	switch {
@@ -427,7 +432,7 @@ func (m *Manager) Target(row store.TargetRow) (TargetDef, error) {
 		def.Target, def.Overridden = tc, row.Source == config.SourceConfig
 	case row.Source == config.SourceConfig:
 		found := false
-		for _, tc := range m.File().Targets {
+		for _, tc := range file.Targets {
 			if strings.EqualFold(tc.Name, row.Name) {
 				def.Target, found = tc, true
 				break
@@ -458,6 +463,9 @@ func (m *Manager) prepare(tc config.TargetConfig) (config.TargetConfig, config.T
 func (m *Manager) CreateTarget(tc config.TargetConfig) (store.TargetRow, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if _, err := config.RestoreHeaders(tc, config.TargetConfig{}); err != nil {
+		return store.TargetRow{}, invalid(err)
+	}
 	tc, t, err := m.prepare(tc)
 	if err != nil {
 		return store.TargetRow{}, err
@@ -503,6 +511,14 @@ func (m *Manager) UpdateTarget(id int64, tc config.TargetConfig) (store.TargetRo
 			return row, ErrRenameCf
 		}
 		tc.Name = row.Name
+	}
+	// the API never returns literal header values; a placeholder keeps the stored one
+	if stored, err := m.targetDef(row, m.file); err == nil {
+		if tc, err = config.RestoreHeaders(tc, stored.Target); err != nil {
+			return row, invalid(err)
+		}
+	} else if _, err := config.RestoreHeaders(tc, config.TargetConfig{}); err != nil {
+		return row, invalid(err)
 	}
 	tc, t, err := m.prepare(tc)
 	if err != nil {

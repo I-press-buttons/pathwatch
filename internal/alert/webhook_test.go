@@ -90,6 +90,28 @@ func TestWebhookDiscordPreset(t *testing.T) {
 	want(t, strings.Contains(m.Content, "RESOLVED"), "content %q", m.Content)
 }
 
+func TestWebhookDiscordNeverMentions(t *testing.T) {
+	n := noteFor(StateFiring)
+	n.Message = "HTTP probe failing (valid for @everyone @here <@&123>)"
+	body, _ := render(t, config.WebhookConfig{Preset: "discord"}, n)
+	var m struct {
+		Content         string `json:"content"`
+		Embeds          []struct{ Description string }
+		AllowedMentions struct {
+			Parse []string `json:"parse"`
+		} `json:"allowed_mentions"`
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatal(err)
+	}
+	want(t, strings.Contains(string(body), `"allowed_mentions":{"parse":[]}`), "allowed_mentions must be an empty array: %s", body)
+	want(t, m.AllowedMentions.Parse != nil && len(m.AllowedMentions.Parse) == 0, "parse %v", m.AllowedMentions.Parse)
+	for _, s := range []string{m.Content, m.Embeds[0].Description} {
+		want(t, !strings.Contains(s, "@everyone") && !strings.Contains(s, "@here") && !strings.Contains(s, "<@&"), "mention intact in %q", s)
+		want(t, strings.Contains(s, "@\u200beveryone"), "zero-width space missing in %q", s)
+	}
+}
+
 func TestWebhookSlackPreset(t *testing.T) {
 	n := noteFor(StateFiring)
 	n.Message = "a <b> & c"

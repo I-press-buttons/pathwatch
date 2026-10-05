@@ -155,6 +155,8 @@ alerts:
   #     #   Authorization: "Bearer ${NTFY_TOKEN}"
   #     # body_template: |               # Go text/template; replaces the preset body
   #     #   {"text": {{json .Title}}, "state": "{{.State}}", "link": "{{.Link}}"}
+  #     #   Discord templates must use {{json .Message}} and include
+  #     #   "allowed_mentions": {"parse": []} so alert text can never ping anyone.
   #
   #   Examples (set one preset):
   #     discord:  url_env -> https://discord.com/api/webhooks/<id>/<token>

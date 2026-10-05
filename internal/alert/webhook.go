@@ -192,6 +192,10 @@ func truncate(s string, max int) string {
 	return s
 }
 
+// discordText puts a zero-width space after each "@" so server-chosen text (probe errors)
+// never reads as a mention, even if copied elsewhere. allowed_mentions does the real work.
+func discordText(s string) string { return strings.ReplaceAll(s, "@", "@\u200b") }
+
 func renderDiscord(n Notification) ([]byte, map[string]string, error) {
 	fields := []map[string]any{
 		{"name": "Target", "value": truncate(n.Target, 200), "inline": true},
@@ -210,7 +214,7 @@ func renderDiscord(n Notification) ([]byte, map[string]string, error) {
 	}
 	embed := map[string]any{
 		"title":       truncate(n.Title(), 250),
-		"description": truncate(n.Message, 3500),
+		"description": truncate(discordText(n.Message), 3500),
 		"color":       stateColor(n.State),
 		"timestamp":   n.CreatedAt.UTC().Format(time.RFC3339),
 		"fields":      fields,
@@ -220,8 +224,11 @@ func renderDiscord(n Notification) ([]byte, map[string]string, error) {
 	}
 	return jsonBody(map[string]any{
 		"username": "pathwatch",
-		"content":  truncate(summaryLine(n), 1900),
+		"content":  truncate(discordText(summaryLine(n)), 1900),
 		"embeds":   []any{embed},
+		// Alert text can carry server-chosen probe errors: never let it ping anyone.
+		// An empty (non-nil) slice marshals to [], which disables mention parsing.
+		"allowed_mentions": map[string]any{"parse": []string{}},
 	})
 }
 

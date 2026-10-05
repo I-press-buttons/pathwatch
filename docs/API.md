@@ -88,7 +88,8 @@ Hosts are validated and normalized (lower-cased, IPv6 compressed, brackets remov
 TCP probes; ICMP hop probes never retry.
 
 `POST /api/targets` creates a UI-managed target from a definition (201, the target object; 409 on
-a duplicate name, 400 on a validation error). The simple form of earlier versions is still accepted:
+a duplicate name, 400 on a validation error, including a definition with more than 16 probes or
+a create when config-file and UI targets together already number 200). The simple form of earlier versions is still accepted:
 ```json
 {"name": "my-isp", "host": "example.com", "icmp_interval_ms": 2500,
  "http_url": "https://example.com/", "tcp_port": 443}
@@ -103,7 +104,7 @@ expanded to rule names.
 `PUT /api/targets/{id}` with a definition → 200, the target object. Applies immediately. A UI
 target may be renamed (its history is kept). A config-file target keeps its name (400 on a
 rename); its edited definition is stored in the database and overrides the file until reverted.
-Changing a probe's identity (HTTP method or URL, TCP port) starts a new history for that probe;
+A definition with more than 16 probes is refused with 400. Changing a probe's identity (HTTP method or URL, TCP port) starts a new history for that probe;
 intervals, timeouts and retries do not.
 
 `DELETE /api/targets/{id}/override` → 204: a config-file target uses its file definition again
@@ -151,7 +152,7 @@ restores. Value shapes:
 
 `PUT /api/settings/{defaults|status|alerts|dns_probes}` with the section's value → 200 and the
 full settings (as `GET`). 400 with every validation problem (for example a rule a target still
-refers to). Unknown fields are rejected.
+refers to, or more than 50 DNS probes). Unknown fields are rejected.
 
 `DELETE /api/settings/{section}` → 200 and the full settings: the section comes from the config
 file again.

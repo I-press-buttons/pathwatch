@@ -25,13 +25,25 @@ const (
 
 // Defaults for settings that are not configured.
 const (
-	DefaultListen   = "127.0.0.1:8080"
-	DefaultUser     = "admin"
-	DefaultDBName   = "pathwatch.db"
-	DefaultConfig   = "pathwatch.yaml"
-	PasswordFile    = ".pathwatch-password"
-	defaultMaxBody  = 1 << 20
-	maxConfigTarget = 200
+	DefaultListen  = "127.0.0.1:8080"
+	DefaultUser    = "admin"
+	DefaultDBName  = "pathwatch.db"
+	DefaultConfig  = "pathwatch.yaml"
+	PasswordFile   = ".pathwatch-password"
+	defaultMaxBody = 1 << 20
+)
+
+// Limits shared by the config file and the web UI, so a write API cannot make the instance run
+// an unbounded number of probes.
+const (
+	// MaxTargets bounds the targets defined in the config file, and the config-file plus
+	// UI-created targets together when a target is created. It is checked on create only for the
+	// UI: a database that already holds more still starts (see settings.Manager.CreateTarget).
+	MaxTargets = 200
+	// MaxProbesPerTarget bounds the probes listed on one target.
+	MaxProbesPerTarget = 16
+	// MaxDNSProbes bounds the DNS probes (file or UI).
+	MaxDNSProbes = 50
 )
 
 // Config is the top-level YAML document.

@@ -253,6 +253,9 @@ func ResolveTarget(tc TargetConfig, d Defaults) (Target, error) {
 	if tc.Retries != nil && (*tc.Retries < 0 || *tc.Retries > MaxRetries) {
 		add("retries must be between 0 and %d", MaxRetries)
 	}
+	if len(tc.Probes) > MaxProbesPerTarget {
+		add("too many probes (%d, max %d)", len(tc.Probes), MaxProbesPerTarget)
+	}
 	probes := tc.Probes
 	if len(probes) == 0 {
 		probes = []ProbeConfig{{Type: ProbeICMPTrace}}

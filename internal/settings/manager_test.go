@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -384,5 +385,106 @@ func TestLegacyUITargetSpec(t *testing.T) {
 	row, _ := e.st.Target(s.Row.ID)
 	if !strings.HasPrefix(row.Spec, `{"v":2`) {
 		t.Errorf("spec not upgraded: %s", row.Spec)
+	}
+}
+
+func tcpProbes(n int) []config.ProbeConfig {
+	ps := make([]config.ProbeConfig, n)
+	for i := range ps {
+		ps[i] = config.ProbeConfig{Type: "tcp", Port: 1000 + i}
+	}
+	return ps
+}
+
+func TestTargetCountLimit(t *testing.T) {
+	e := newEnv(t)
+	fileN := len(e.m.Effective().Targets)
+	for i := fileN; i < config.MaxTargets; i++ {
+		if _, err := e.m.CreateTarget(config.TargetConfig{Name: "t" + strconv.Itoa(i), Host: "h.example"}); err != nil {
+			t.Fatalf("target %d: %v", i, err)
+		}
+	}
+	_, err := e.m.CreateTarget(config.TargetConfig{Name: "one-too-many", Host: "h.example"})
+	var inv InvalidError
+	if !errors.As(err, &inv) || !strings.Contains(err.Error(), "too many targets") {
+		t.Fatalf("over the cap: %v", err)
+	}
+	// editing existing targets is still possible at the cap
+	if _, err := e.m.UpdateTarget(e.state(t, "t"+strconv.Itoa(fileN)).Row.ID, config.TargetConfig{Name: "renamed", Host: "h.example"}); err != nil {
+		t.Errorf("update at the cap: %v", err)
+	}
+}
+
+func TestOverCapDatabaseStillStarts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "m.db")
+	e := open(t, path, fileYAML)
+	for i := 0; i < config.MaxTargets+5; i++ { // bypass the manager, as an older version would have
+		tc := config.TargetConfig{Name: "t" + strconv.Itoa(i), Host: "h.example"}
+		tg, err := config.ResolveUITarget(tc, e.m.Effective().Defaults)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 { // and with more probes than allowed
+			tc.Probes = tcpProbes(config.MaxProbesPerTarget + 3)
+		}
+		spec, err := encodeSpec(tc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.sched.AddUITarget(tg, spec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.close()
+	e2 := open(t, path, fileYAML)
+	defer e2.close()
+	if n := len(e2.m.Effective().UITargets); n != config.MaxTargets+5 {
+		t.Errorf("UI targets kept: %d", n)
+	}
+	if _, err := e2.m.CreateTarget(config.TargetConfig{Name: "more", Host: "h.example"}); err == nil {
+		t.Error("create over the cap succeeded")
+	}
+}
+
+func TestProbesPerTargetLimit(t *testing.T) {
+	e := newEnv(t)
+	_, err := e.m.CreateTarget(config.TargetConfig{Name: "big", Host: "h.example", Probes: tcpProbes(config.MaxProbesPerTarget + 1)})
+	var inv InvalidError
+	if !errors.As(err, &inv) || !strings.Contains(err.Error(), "too many probes") {
+		t.Fatalf("create: %v", err)
+	}
+	row, err := e.m.CreateTarget(config.TargetConfig{Name: "ok", Host: "h.example", Probes: tcpProbes(config.MaxProbesPerTarget)})
+	if err != nil {
+		t.Fatalf("create at the cap: %v", err)
+	}
+	if _, err := e.m.UpdateTarget(row.ID, config.TargetConfig{Name: "ok", Host: "h.example", Probes: tcpProbes(config.MaxProbesPerTarget + 1)}); !errors.As(err, &inv) {
+		t.Errorf("update past the cap: %v", err)
+	}
+	// a config-file target edited past the cap is refused too
+	alpha := e.state(t, "alpha").Row.ID
+	if _, err := e.m.UpdateTarget(alpha, config.TargetConfig{Name: "alpha", Host: "alpha.example", Probes: tcpProbes(config.MaxProbesPerTarget + 1)}); !errors.As(err, &inv) {
+		t.Errorf("file target update past the cap: %v", err)
+	}
+}
+
+func TestDNSProbeLimit(t *testing.T) {
+	e := newEnv(t)
+	mk := func(n int) *[]config.DNSProbeConfig {
+		l := make([]config.DNSProbeConfig, n)
+		for i := range l {
+			l[i] = config.DNSProbeConfig{Name: "p" + strconv.Itoa(i), Server: "192.0.2.53", Query: "example.com"}
+		}
+		return &l
+	}
+	if err := e.m.SetDNSProbes(mk(config.MaxDNSProbes)); err != nil {
+		t.Fatalf("at the cap: %v", err)
+	}
+	err := e.m.SetDNSProbes(mk(config.MaxDNSProbes + 1))
+	var inv InvalidError
+	if !errors.As(err, &inv) || !strings.Contains(err.Error(), "too many DNS probes") {
+		t.Fatalf("over the cap: %v", err)
+	}
+	if _, err := config.Parse([]byte("dns_probes:\n"+strings.Repeat("  - {name: a, server: 192.0.2.1, query: x.example}\n", config.MaxDNSProbes+1)), func(string) string { return "" }); err == nil {
+		t.Error("file with too many DNS probes accepted")
 	}
 }

@@ -3,6 +3,9 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    # Weekly, so new standard-library advisories show up between pushes.
+    - cron: '17 5 * * 1'
 
 permissions:
   contents: read
@@ -20,7 +23,9 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          # Latest 1.26 patch (same spec as release.yml), not the go.mod minimum.
+          go-version: '1.26.x'
+          check-latest: true
 
       - name: gofmt
         run: |
@@ -56,7 +61,9 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          # Latest 1.26 patch (same spec as release.yml), not the go.mod minimum.
+          go-version: '1.26.x'
+          check-latest: true
 
       - name: Cross-build
         env:
@@ -64,3 +71,16 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: go build -trimpath -o /dev/null ./cmd/pathwatch
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        with:
+          # Must match the toolchain spec of release.yml; the action default is
+          # "stable", which could be a different minor release.
+          go-version-input: '1.26.x'
+          check-latest: true

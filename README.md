@@ -31,7 +31,9 @@ Screenshots use demo data.
 ```sh
 docker run -d --name pathwatch \
   --network host \
-  --cap-add NET_RAW \
+  --cap-drop ALL --cap-add NET_RAW \
+  --security-opt no-new-privileges:true \
+  --read-only --tmpfs /tmp \
   --restart unless-stopped \
   -e TZ=Europe/London \
   -e PATHWATCH_PASSWORD='choose-a-long-password' \
@@ -39,9 +41,18 @@ docker run -d --name pathwatch \
   ghcr.io/i-press-buttons/pathwatch:latest
 ```
 
-Open <http://localhost:8095> and log in as `admin`. `--network host` makes probes follow your real traffic path, and `--cap-add NET_RAW` allows raw ICMP for hop tracing. If `PATHWATCH_PASSWORD` is omitted, a random one is saved to `/data/.pathwatch-password` and logged.
+Open <http://localhost:8095> and log in as `admin`. `--network host` makes probes follow your real traffic path, and `--cap-add NET_RAW` allows raw ICMP for hop tracing. The container runs as root but drops every other capability, cannot gain privileges, and has a read-only root filesystem; only `/data` is writable (see [Container hardening](#container-hardening)). If `PATHWATCH_PASSWORD` is omitted, a random one is saved to `/data/.pathwatch-password` and logged.
 
 To build from source (Go 1.26+, no C toolchain): `go build ./cmd/pathwatch && ./pathwatch run --config pathwatch.yaml`. A one-shot trace is available with `pathwatch trace <host>`.
+
+### Container hardening
+
+The image runs as root (raw ICMP sockets work most reliably that way on Synology kernels), so the examples confine that process: `--cap-drop ALL --cap-add NET_RAW` keeps the only capability pathwatch uses, `no-new-privileges` blocks privilege gain, and `--read-only` with a `/tmp` tmpfs leaves `/data` as the only writable path. The compose file and Portainer stack in `deploy/` use the same settings. To check: `docker exec pathwatch grep -E 'CapEff|NoNewPrivs' /proc/1/status` should show `0000000000002000` and `1`, and the log should contain `icmp_mode=raw`.
+
+- **Data folder ownership.** Without `DAC_OVERRIDE`, root can only write to `/data` if the host folder is owned by root or is world-writable. A folder owned by another user (typical on Synology, where File Station creates folders owned by your DSM user) fails at startup with `write starter config: open /data/pathwatch.yaml: permission denied`. Fix it with `sudo chown root:root <data folder>`, or add `--cap-add DAC_OVERRIDE`. Existing installs whose files are already root-owned are not affected.
+- **Log file location.** With `--read-only`, a `log.file` outside `/data` cannot be opened. pathwatch prints a warning and keeps logging to stderr (`docker logs`). A relative `log.file` resolves next to the config file, so it lands in `/data`.
+- **Non-root (advanced, not the default).** You can run with `user: "<uid>:<gid>"`, but the image has no file capability on the binary, so a non-root process gets no effective `NET_RAW` and raw ICMP fails; it only works with unprivileged datagram ICMP where the host's `net.ipv4.ping_group_range` allows it (often not enabled on Synology). The data folder must be owned by that uid. If you build your own image with `setcap cap_net_raw+ep` on the binary, do not combine that with `no-new-privileges` unless you have verified it on your runtime: file capabilities can be ignored under `no_new_privs` depending on the Docker/runc version, and with `+ep` a container started without `NET_RAW` in its bounding set will refuse to execute the binary at all.
+- `NET_RAW` on the host network also allows raw packet sockets on all host interfaces. That is inherent to raw ICMP mode.
 
 ## Documentation
 

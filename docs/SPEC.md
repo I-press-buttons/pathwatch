@@ -492,19 +492,22 @@ Config rules:
 
 ## Distribution
 
-- **Docker (primary):** multi-arch image (linux/amd64, linux/arm64) published to GHCR on every tag. Minimal base (`distroless/static` or `scratch` with CA certificates and tzdata), runs as non-root. The binary carries the `cap_net_raw` file capability, so raw sockets work when the container is granted `NET_RAW`. Datagram mode needs no capability where `ping_group_range` allows it. Compose example:
+- **Docker (primary):** multi-arch image (linux/amd64, linux/arm64) published to GHCR on every tag. Alpine base with CA certificates and tzdata (a shell is kept for debugging). The container runs as root: raw ICMP sockets work reliably as root + `NET_RAW` on Synology kernels, where unprivileged datagram ICMP (`ping_group_range`) is often not enabled. The binary carries no file capability. The shipped compose files confine the root process: `cap_drop: [ALL]` plus `cap_add: [NET_RAW]`, `no-new-privileges`, `read_only: true` and a `/tmp` tmpfs, because everything pathwatch writes (config, database, generated password, optional log file) lives under `/data`. Without `DAC_OVERRIDE`, `/data` must be owned by root or be world-writable (on Synology run `chown root:root` on the folder, or add `DAC_OVERRIDE`). A `log.file` outside `/data` cannot be opened under `read_only`; pathwatch then logs to stderr only. A non-root profile needs a file capability on the binary (or datagram ICMP) and does not combine safely with `no-new-privileges` on every runtime; it is not the default. Compose example:
 
   ```yaml
   services:
     pathwatch:
       image: ghcr.io/i-press-buttons/pathwatch:latest
       network_mode: host           # accurate paths; avoids the Docker NAT hop
+      cap_drop: [ALL]
       cap_add: [NET_RAW]
+      security_opt: ["no-new-privileges:true"]
+      read_only: true
+      tmpfs: [/tmp]
       environment:
         PATHWATCH_PASSWORD: ${PATHWATCH_PASSWORD}
       volumes:
-        - ./config:/config          # pathwatch.yaml, optional TLS files
-        - ./data:/data              # SQLite DB: must be local disk, not NFS/SMB
+        - ./data:/data              # config, SQLite DB, password: must be local disk, not NFS/SMB
       restart: unless-stopped
   ```
 

@@ -120,13 +120,28 @@ pathwatch needs raw network access to trace the path. Check the stack for both o
 
 ```yaml
 network_mode: host
+cap_drop:
+  - ALL
 cap_add:
   - NET_RAW
 ```
 
-Both must be present, and the container must run as root (the default for this image, so do not add a `user:` line). After fixing the stack, click **Update the stack**. In the container logs, look for a line that states which ICMP mode was detected.
+Both must be present (`NET_RAW` must not be dropped), and the container must run as root (the default for this image, so do not add a `user:` line). The stack also sets `security_opt: [no-new-privileges:true]`, `read_only: true` and a `/tmp` tmpfs; those do not affect ICMP. After fixing the stack, click **Update the stack**. In the container logs, look for a line that states which ICMP mode was detected.
 
 If you started the container some other way (for example from the Container Manager UI), make sure **Use the same network as Docker Host** is on and that `NET_RAW` is added under capabilities.
+
+### The container stops with "permission denied" on /data/pathwatch.yaml
+
+The stack drops all capabilities except `NET_RAW`, including `DAC_OVERRIDE`. Without it, root can only write to the data folder if the folder is owned by root or is writable by everyone. Folders created in File Station usually belong to your DSM user, so the first start fails with `write starter config: open /data/pathwatch.yaml: permission denied`. Pick one fix:
+
+- Over SSH: `sudo chown root:root /volume1/docker/pathwatch` (preferred; keeps the capability set minimal), or
+- In the stack, remove the `#` in front of `# - DAC_OVERRIDE` under `cap_add`.
+
+Existing installs whose files are already owned by root are not affected.
+
+### A log file outside /data is ignored
+
+The container's root filesystem is read-only, so a `log.file` outside `/data` cannot be opened. pathwatch prints `cannot open log file ...` and keeps logging to stderr, which Portainer shows under the container **Logs**. Use a path under `/data` (a relative path resolves next to `pathwatch.yaml`).
 
 ### "Port already in use" or the container keeps restarting
 

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"syscall"
 
@@ -110,7 +111,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 		log.Info("web UI authentication is off (loopback only); set PATHWATCH_PASSWORD to enable it")
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cfg.Storage.Path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(cfg.Storage.Path), 0o700); err != nil {
 		return fmt.Errorf("create data directory: %w", err)
 	}
 	st, err := store.Open(cfg.Storage.Path, store.Options{
@@ -123,6 +124,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 		return err
 	}
 	defer st.Close()
+	warnLoosePerms(log, cfg.Path, cfg.Storage.Path)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -235,5 +237,19 @@ func watchReload(ctx context.Context, path string, mgr *settings.Manager, log *s
 			continue
 		}
 		log.Info("config reloaded", "targets", len(cfg.Targets), "dns_probes", len(cfg.DNSProbes))
+	}
+}
+
+// warnLoosePerms logs a warning for each existing file readable by group or others: the config
+// and the database can hold probe header secrets. Files are never changed; new ones are created
+// owner-only. Skipped on Windows, where mode bits do not express access.
+func warnLoosePerms(log *slog.Logger, paths ...string) {
+	if runtime.GOOS == "windows" {
+		return
+	}
+	for _, p := range paths {
+		if fi, err := os.Stat(p); err == nil && fi.Mode().Perm()&0o044 != 0 {
+			log.Warn("file is readable by other users; consider chmod 600 (it may contain secrets)", "path", p, "mode", fmt.Sprintf("%04o", fi.Mode().Perm()))
+		}
 	}
 }

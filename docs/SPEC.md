@@ -25,7 +25,6 @@ Project name: `pathwatch`.
 - A native desktop GUI.
 - Packet capture or deep packet inspection.
 - Editing secrets, notification channels, maintenance windows or server settings (listen, TLS, storage) from the UI. Targets, probe settings, alert thresholds and DNS probes are editable, see [Settings edited in the UI](#settings-edited-in-the-ui).
-- Data export / ISP report generation (possible later, not planned).
 
 ## Key design decisions
 
@@ -273,6 +272,13 @@ Target selector at the top and a time-range selector: **1h, 6h, 24h, 7d, 30d, 90
 Keep the visual style flat and clean, with dark mode support via `prefers-color-scheme`. Use a sequential single-hue scale for latency and red for loss. The latency scale is shared across all rows of a view: 0 to the view's p99, adjustable.
 
 All times are stored in UTC and displayed in the browser's local timezone.
+
+### Export and ISP report
+
+The target page has **Export CSV**, **Export JSON** and **Report** controls that use the time range on screen (a Hops/Probes selector chooses what is exported).
+
+- **Export** (`GET /api/targets/{id}/export`): rollup rows as a file download. Hops: per bucket and TTL, the hop address, hostname and ASN where known, probes sent and lost, loss %, and RTT min/avg/max/jitter/p95. Probes: per HTTP/TCP probe and bucket, the phase averages, total min/avg/max/p95 and the error count. The resolution follows the range like the history endpoints (1-minute buckets up to 7 days, 1-hour beyond; `res=1m|1h` overrides). The range is bounded and a request that would exceed 250,000 rows is refused with 400. The file is streamed. Text cells that a spreadsheet could read as a formula (leading `=`, `+`, `-`, `@`, tab or CR) get a leading single quote in CSV, because reverse-DNS hostnames are attacker-influenced. The control is a plain same-origin link, so it needs no script and works under the CSP. The hop identity is that of the path version current at the end of the range.
+- **Report** (`GET /api/targets/{id}/report`, page `#/target/{id}/report?from=&to=`): a page meant to be printed or saved as PDF to hand to an ISP. It shows the summary (destination availability and loss, latency average and p95, jitter, MOS, HTTP/TCP success), the incidents of the range (alerts and degradation events with start, duration, kind and severity), for each incident the first hop where loss or latency degradation starts (found with the same classifier as the live analysis, with address, hostname and AS) and the HTTP/TCP probe impact during it, monitor gaps (shown as "no data", never as loss) and path changes. `@media print` hides the navigation and controls and forces light colours.
 
 **JSON API** (internal, used by the UI): targets and status, current path, time-bucketed samples for a range (the server picks the tier), events, alerts, silences (create/end), plus an SSE endpoint that pushes each completed round and probe result for live updates.
 
@@ -600,7 +606,7 @@ mtr and WinMTR (live per-hop, no history), Trippy (Rust TUI traceroute), Smokepi
 6. **Alerting:** hop classifier, local-outage detection, rule engine with baselines (cold start, freeze, `min_delta`), hysteresis and cooldown, persistent outbox with retry, webhook presets and email, silences and maintenance windows, heartbeat, alerts feed in the UI.
 7. **Packaging and Windows:** Windows prober (`IcmpSendEcho2`) tested on Windows 10/11, native Windows service, systemd unit, GoReleaser binaries, README with screenshots.
 8. **IPv6 hop tracing:** ICMPv6 prober (Linux raw and datagram, Windows `Icmp6SendEcho2`), see Platform layer.
-9. **Later:** UDP and TCP-SYN trace modes, ASN and rDNS enrichment polish, full config hot reload, possibly export/ISP report. (Prometheus `/metrics` is implemented, opt-in.)
+9. **Later:** UDP and TCP-SYN trace modes, ASN and rDNS enrichment polish, full config hot reload. (Prometheus `/metrics`, data export and the ISP report are implemented.)
 
 ## Instructions for the coding agent
 
@@ -631,6 +637,6 @@ Decisions made:
 - Primary deployment: **Docker on NAS/server**. The Docker milestone moved to 4, the Windows prober moved to 7, and armv7 builds were added.
 - IPv4 first with a family-agnostic design; IPv6 prober later.
 - Added scope: overview page, 30d/90d/custom ranges with drag-to-zoom, TLS cert-expiry rule, DNS resolver probe, silences and maintenance windows, optional heartbeat.
-- Not planned: export/ISP report.
+- Later additions: an opt-in Prometheus `/metrics` endpoint (issue #21) and data export (CSV/JSON) with a printable ISP report (issue #22), see [Export and ISP report](#export-and-isp-report).
 - Remote access: Basic auth required off loopback, optional built-in TLS; no unauthenticated mode.
 - License: MIT.

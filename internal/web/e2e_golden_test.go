@@ -224,7 +224,7 @@ func (f *e2eFixture) goldenURLs() []string {
 func e2eGet(t testing.TB, h http.Handler, url string) []byte {
 	t.Helper()
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", url, nil))
+	h.ServeHTTP(w, loopbackReq("GET", url))
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET %s: %d %s", url, w.Code, w.Body.String())
 	}

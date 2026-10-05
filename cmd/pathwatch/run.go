@@ -84,16 +84,8 @@ func runCmd(args []string) int {
 	return 0
 }
 
-func run(cfg *config.Config, log *slog.Logger) error {
-	if cfg.Created {
-		log.Info("config file did not exist; wrote a starter config", "path", cfg.Path)
-	}
-	log.Info("pathwatch starting", "version", version, "config", cfg.Path, "database", cfg.Storage.Path, "listen", cfg.Listen)
-
-	auth, err := cfg.ResolveAuth(nil)
-	if err != nil {
-		return fmt.Errorf("resolve credentials: %w", err)
-	}
+// logAuthStatus reports how the web UI is protected, and warns about a weak user-chosen password.
+func logAuthStatus(log *slog.Logger, auth config.Auth) {
 	switch {
 	case auth.Generated:
 		log.Warn("================================================================")
@@ -106,9 +98,25 @@ func run(cfg *config.Config, log *slog.Logger) error {
 		log.Info("using the generated web UI password", "user", auth.User, "file", auth.FilePath)
 	case auth.Enabled:
 		log.Info("web UI authentication enabled", "user", auth.User)
+		if weakPassword(auth.Password) {
+			log.Warn(weakPasswordMsg, "min_length", minPasswordLen)
+		}
 	default:
 		log.Info("web UI authentication is off (loopback only); set PATHWATCH_PASSWORD to enable it")
 	}
+}
+
+func run(cfg *config.Config, log *slog.Logger) error {
+	if cfg.Created {
+		log.Info("config file did not exist; wrote a starter config", "path", cfg.Path)
+	}
+	log.Info("pathwatch starting", "version", version, "config", cfg.Path, "database", cfg.Storage.Path, "listen", cfg.Listen)
+
+	auth, err := cfg.ResolveAuth(nil)
+	if err != nil {
+		return fmt.Errorf("resolve credentials: %w", err)
+	}
+	logAuthStatus(log, auth)
 
 	if err := os.MkdirAll(filepath.Dir(cfg.Storage.Path), 0o755); err != nil {
 		return fmt.Errorf("create data directory: %w", err)

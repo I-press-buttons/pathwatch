@@ -13,6 +13,7 @@ Give home labs, small networks and anyone troubleshooting flaky connectivity a f
 - **End-to-end probes**: HTTP/HTTPS (DNS, connect, TLS, TTFB, transfer), TCP connect and DNS, correlated on the same time axis as the hops.
 - **Rate-limit-aware alerting**: end-to-end probes decide; loss on an intermediate router alone never pages you. Hysteresis, cooldowns, silences, maintenance windows, and queued retries. Webhook (Discord, Slack, ntfy, generic) and email channels.
 - **MOS score** per target from latency, jitter and loss.
+- **Data export and ISP report**: download the selected range as CSV or JSON (per-hop or per-probe rollups), or open a printable report with availability, latency, MOS, incidents, the first degraded hop of each incident, probe impact, monitoring gaps and path changes.
 - **Long-term history** in SQLite with automatic rollups and retention.
 - **Configurable from the UI or YAML**: manage targets (hostname, IPv4, IPv6), intervals, thresholds and alert rules in the browser, or keep everything in a version-controlled file.
 - **Themes**: nine built-in, including Dark, Nord, Solarized and a green/yellow/red Classic scale.

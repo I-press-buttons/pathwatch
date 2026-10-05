@@ -239,6 +239,45 @@ Non-responding TTLs are included with `address: null`, `classification: "no_repl
   "points": [[1759496400000, 3.2, 0.0]]}]                 // [ts, rtt_ms avg, fail_pct]
 ```
 
+## Export (file download)
+
+`GET /api/targets/{id}/export?from=…&to=…&format=csv|json&kind=hops|probes[&res=1m|1h]`
+
+Rollup rows of one target as an attachment (`Content-Disposition: attachment; filename="pathwatch-<target>-<kind>-<from>-<to>.csv|json"`), streamed. Range parameters as above (default last hour, at most 400 days). `format` defaults to `csv`, `kind` to `hops`.
+Resolution: 1-minute buckets up to 7 days, 1-hour beyond, unless `res` is given. Rows are only produced for buckets with data. Invalid parameters, and a request that would return more than 250,000 rows (the error says how many), answer `400 {"error": …}` before any data is sent; narrow the range or use `res=1h`.
+
+`kind=hops` columns: `bucket_start` (RFC 3339 UTC), `bucket_start_ms`, `ttl`, `address`, `hostname`, `asn`, `as_name` (the responder of the path version current at the end of the range, where known), `sent`, `lost`, `loss_pct`, `rtt_min_ms`, `rtt_avg_ms`, `rtt_max_ms`, `jitter_ms`, `rtt_p95_ms` (empty above about 60,000 rows, where histograms are skipped).
+`kind=probes` columns (HTTP and TCP probes of the target): `bucket_start`, `bucket_start_ms`, `probe_id`, `probe`, `type`, `samples`, `errors`, `error_pct`, `dns_avg_ms`, `connect_avg_ms`, `tls_avg_ms`, `ttfb_avg_ms`, `transfer_avg_ms`, `total_min_ms`, `total_avg_ms`, `total_max_ms`, `total_p95_ms`.
+
+CSV: UTF-8, header row, encoding/csv quoting, empty cell = no value. Text cells starting with `=`, `+`, `-`, `@`, tab or CR get a leading `'` (formula-injection guard; hostnames come from reverse DNS).
+JSON: `{"target_id", "target", "kind", "resolution": "1m0s", "from", "to", "row_count", "rows": [{<column>: value, …}]}` with `null` for missing values; text is exported unmodified.
+
+## Report data
+
+`GET /api/targets/{id}/report?from=…&to=…` (range parameters as above)
+```json
+{"target": {"id": 1, "name": "cloudflare", "host": "cloudflare.com"},
+ "from": 1759496400000, "to": 1759582800000, "generated_at": 1759582800000, "resolution": "1m",
+ "summary": {"source": "icmp",            // icmp | tcp | last_hop | http | none: where the end-to-end series comes from
+   "samples": 17280, "availability_pct": 99.2, "loss_pct": 0.8, "avg_ms": 12.3, "p95_ms": 21.0,
+   "jitter_ms": 1.1, "mos": 4.31,
+   "http": [{"probe_id": 4, "label": "HEAD https://cloudflare.com/", "type": "http", "samples": 2880, "errors": 3, "success_pct": 99.9, "avg_ms": 68.5}],
+   "tcp":  [{"probe_id": 5, "label": "TCP :443", "type": "tcp", "samples": 8640, "errors": 0, "success_pct": 100.0, "avg_ms": 10.3}]},
+ "incidents": [{"source": "alert",         // alert | event
+   "id": 12, "kind": "final_hop_loss",     // rule type of an alert; event kinds: degraded | icmp_unresponsive | local_outage
+   "rule": "dest-loss", "severity": "critical",   // critical | warning | info
+   "state": "resolved", "message": "…", "started_at": 1759499000000, "ended_at": 1759499300000, "ongoing": false,
+   "duration_ms": 300000,                  // an ongoing incident lasts until the end of the range
+   "ttl": null,
+   "origin": {"ttl": 7, "address": "203.0.113.9", "hostname": "core1.isp.example", "asn": 64500, "as_name": "Example ISP",
+              "reason": "loss", "loss_pct": 42.0, "avg_ms": 18.2, "baseline_max_ms": 25.0, "classification": "degraded"},
+   "probes": [{"probe_id": 5, "label": "TCP :443", "type": "tcp", "samples": 30, "errors": 12, "success_pct": 60.0, "avg_ms": 11.0}]}],
+ "truncated": false,                       // true when more than 200 incidents were in the range
+ "gaps": [{"from": 1759510000000, "to": 1759510300000, "duration_ms": 300000}],      // no data, not loss
+ "path_changes": [{"at": 1759520000000, "from_ip": "192.0.2.1", "to_ip": "192.0.2.2", "resolved_ip": "192.0.2.2"}]}
+```
+Incidents are the target's non-suppressed alerts and its `degraded`, `icmp_unresponsive` and `local_outage` events that overlap the range, oldest first. `origin` is the earliest hop where loss (above 5%) or latency (above its baseline band, from the six hours before the incident) starts while every hop and probe after it is degraded too, from `analyze.Classify` over the incident window. It is `null` when no hop qualifies (a hop that degrades alone is ICMP rate limiting) and for kinds that are not about delivery (certificate, route change, local outage, ICMP-unresponsive). `probes` is the HTTP/TCP result during the incident. Missing values are `null`.
+
 ## Alerts and events
 
 `GET /api/alerts?limit=100&target_id=…`

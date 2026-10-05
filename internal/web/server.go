@@ -124,6 +124,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/targets/{id}/timeline", s.handleTimeline)
 	m.HandleFunc("GET /api/targets/{id}/series", s.handleSeries)
 	m.HandleFunc("GET /api/targets/{id}/probes", s.handleProbes)
+	m.HandleFunc("GET /api/targets/{id}/export", s.handleExport)
+	m.HandleFunc("GET /api/targets/{id}/report", s.handleReport)
 	m.HandleFunc("GET /api/dns", s.handleDNS)
 	m.HandleFunc("GET /api/alerts", s.handleAlerts)
 	m.HandleFunc("GET /api/events", s.handleEvents)

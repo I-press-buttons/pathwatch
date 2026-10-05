@@ -178,6 +178,17 @@ func (s *Store) LatestPath(targetID int64) (PathRow, error) {
 	return p, err
 }
 
+// MaxHopTTL returns the highest TTL that any path version of the target has a responder
+// recorded for (0 when there is none). The export uses it to size a request before loading it.
+func (s *Store) MaxHopTTL(targetID int64) (int, error) {
+	var v sql.NullInt64
+	err := s.rdb.QueryRow(`SELECT MAX(ttl) FROM path_hops WHERE path_id IN (SELECT id FROM paths WHERE target_id=?)`, targetID).Scan(&v)
+	if err != nil {
+		return 0, err
+	}
+	return int(v.Int64), nil
+}
+
 // LastRoundTime returns the timestamp of the newest stored round of a target.
 func (s *Store) LastRoundTime(targetID int64) (time.Time, bool) {
 	var v sql.NullInt64

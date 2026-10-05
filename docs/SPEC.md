@@ -275,10 +275,14 @@ All times are stored in UTC and displayed in the browser's local timezone.
 
 ## Access and security
 
-- The binary binds to `127.0.0.1:8080` by default. The Docker image defaults to `0.0.0.0:8080`.
-- If `listen` is not a loopback address, Basic auth must be configured or startup fails. There is no "no auth" mode.
-- Optional built-in TLS: `tls.cert_file` and `tls.key_file`. Without TLS, Basic auth credentials cross the network in clear text. The README recommends TLS or a reverse proxy (Caddy, Traefik, Synology's built-in proxy) for anything beyond a trusted LAN.
-- Passwords are compared in constant time. The API is same-origin only, and the one state-changing endpoint (silences) requires a JSON content type, which blocks simple cross-site form posts.
+- **Bind address.** The binary binds to `127.0.0.1:8080` by default. The Docker image sets `PATHWATCH_LISTEN=0.0.0.0:8095`, so the web UI is reachable from the whole network by default.
+- **Authentication.** If `listen` is not a loopback address, Basic auth is always on. When no password is configured (`auth.basic_password_env` / `PATHWATCH_PASSWORD`), pathwatch generates one on first start, stores it in `/data/.pathwatch-password` (mode 0600; next to the database) and logs it once. Anyone with access to the container logs or the data folder can read it, so setting `PATHWATCH_PASSWORD` explicitly is recommended. On a loopback bind with no password configured, authentication is off and a log line says so. `/healthz` is exempt from auth.
+- **Weak passwords and brute force.** A startup warning is logged when `PATHWATCH_PASSWORD` is shorter than 12 characters. Failed Basic-auth attempts are rate-limited per client IP: further attempts get `429` with a `Retry-After` header. Each failure is logged at warn level with the message `authentication failed` (suitable for fail2ban). Behind a reverse proxy the client IP is the proxy's, so rate-limit at the proxy as well.
+- **Clear-text credentials.** Without TLS, Basic auth credentials cross the network in clear text. Use plain HTTP only on a trusted LAN and never forward the port from the internet. For anything else use a VPN, an HTTPS reverse proxy (Caddy, Traefik, Synology's built-in reverse proxy) or built-in TLS (`tls.cert_file` and `tls.key_file`). The README "Security" section and docs/SYNOLOGY.md ("Securing access") repeat this for users. The image's healthcheck is plain HTTP (`GET /healthz` via `deploy/healthcheck.sh`), so with built-in TLS it fails: override `healthcheck:` in the compose file (for example a `wget --no-check-certificate` call to `https://127.0.0.1:8095/healthz`) or terminate TLS in a reverse proxy instead.
+- **DNS-rebinding protection.** While authentication is off, requests whose `Host` header is not `localhost`, an address in `127.0.0.0/8`, `::1`, or the host of `public_url` are rejected with `421 Misdirected Request`. `X-Forwarded-Host` is deliberately not trusted for this check. A local reverse proxy in front of an auth-less loopback instance therefore needs its public hostname in `public_url` (or, better, a password, which turns authentication on and this check off).
+- **Security headers.** Every response carries `Content-Security-Policy` (with `frame-ancestors 'none'`), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`, so the UI cannot be framed. `Strict-Transport-Security` is added only when built-in TLS is enabled.
+- **CSRF model.** The API is same-origin only. Every request with a method other than GET, HEAD or OPTIONS passes the `sameOrigin` check: it is accepted when `Sec-Fetch-Site` is `same-origin` or `none` and refused when it is `cross-site` or `same-site`. When the header is absent (older browsers) the `Origin` header, if present, must match `Host`, the first `X-Forwarded-Host` value, or the host of `public_url`; requests without an `Origin` (curl, scripts) pass. Endpoints that take a body (targets, settings, silences) also require `Content-Type: application/json`, which blocks simple cross-site form posts; body-less ones (DELETE, pause/resume) rely on `sameOrigin` alone. Reverse-proxy users should set `public_url` and forward `X-Forwarded-Host`, since both feed this check.
+- Passwords are compared in constant time.
 - `public_url` (for example `https://nas.local:8080`) builds deep links in alerts. Without it, alerts omit the link.
 - Never log secrets.
 
@@ -337,6 +341,16 @@ Optional: `heartbeat.url` gets a GET every `heartbeat.interval` while pathwatch 
 ### Channels
 
 - **Webhook:** POST JSON containing target, rule, state (firing or resolved; `event` for one-shot `route_change` alerts), current value, baseline, timestamps (RFC 3339 and Unix ms), and a deep link (if `public_url` is set). The URL comes from `url_env` and, like header values, is never logged; header values may use `${ENV_VAR}`. Requests time out after 10s and a non-2xx response counts as a failure. Presets for `discord`, `slack` (and Slack-compatible), `ntfy`, and `generic` (raw JSON, for n8n or Home Assistant). A custom body is possible via a Go `text/template`. A custom body for Discord must use `{{json .Message}}` and include `"allowed_mentions": {"parse": []}`, because alert text can contain text chosen by the probed server and would otherwise be able to ping `@everyone`. Optional custom headers (values may reference environment variables).
+
+  **Custom body (`body_template`).** The body is a Go `text/template` rendered with these fields: `AlertID`, `Title` (for example `FIRING cloudflare: http-slow`), `State` (`firing`, `resolved` or `event`), `Target`, `TargetID` (0 when the alert has no target), `Rule`, `RuleType`, `Message`, `Value`, `PeakValue`, `Baseline` (numbers), `Unit`, `ValueText` (for example `412 ms`), `BaselineText`, `StartedAt` and `EndedAt` (RFC 3339 UTC; `EndedAt` is empty while firing), `StartedAtMS` and `EndedAtMS` (Unix ms; 0 while firing), `Duration` (for example `5m3s`), `DurationSeconds`, `Link` (empty without `public_url`) and `Details` (a JSON string). Helper functions: `json` (JSON-encodes any value, including the surrounding quotes), `upper`, `lower` and `trim`.
+
+  `text/template` does no escaping. Target and rule names are user-entered, and `Message` can contain the last probe error (up to 160 characters), which may include text derived from the remote side such as a TLS certificate host name. A value containing `"`, a backslash or a newline inside a hand-quoted JSON string yields invalid JSON, or lets the value inject extra JSON fields. **When building JSON, wrap every string field in `{{json ...}}` and do not add your own quotes around it:**
+
+  ```yaml
+  body_template: '{"text": {{json .Title}}, "target": {{json .Target}}, "rule": {{json .Rule}}, "state": {{json .State}}, "message": {{json .Message}}, "link": {{json .Link}}, "value": {{.Value}}}'
+  ```
+
+  Numeric fields (`Value`, `PeakValue`, `Baseline`, `AlertID`, ...) may be inserted bare.
 - **Email:** SMTP with host, port, and TLS mode `starttls` (587), `tls` (implicit TLS, 465), or `none`. Username and password come from environment variables. One message per alert event, not per probe.
 - **Routing:** each rule may list the channels it notifies (default: all). For example, route changes could go to the webhook only.
 
@@ -471,7 +485,7 @@ alerts:
       url_env: PATHWATCH_WEBHOOK_URL  # webhook URLs often embed tokens
       preset: discord                 # discord | slack | ntfy | generic
       headers: {}
-      # body_template: '{"text": "{{.Target}} {{.Rule}} {{.State}}"}'
+      # body_template: '{"text": {{json .Title}}, "target": {{json .Target}}}'   # always {{json ...}} for strings
     email:
       smtp_host: smtp.example.com
       smtp_port: 587
@@ -492,19 +506,22 @@ Config rules:
 
 ## Distribution
 
-- **Docker (primary):** multi-arch image (linux/amd64, linux/arm64) published to GHCR on every tag. Minimal base (`distroless/static` or `scratch` with CA certificates and tzdata), runs as non-root. The binary carries the `cap_net_raw` file capability, so raw sockets work when the container is granted `NET_RAW`. Datagram mode needs no capability where `ping_group_range` allows it. Compose example:
+- **Docker (primary):** multi-arch image (linux/amd64, linux/arm64) published to GHCR on every tag. Alpine base with CA certificates and tzdata (a shell is kept for debugging). The container runs as root: raw ICMP sockets work reliably as root + `NET_RAW` on Synology kernels, where unprivileged datagram ICMP (`ping_group_range`) is often not enabled. The binary carries no file capability. The shipped compose files confine the root process: `cap_drop: [ALL]` plus `cap_add: [NET_RAW]`, `no-new-privileges`, `read_only: true` and a `/tmp` tmpfs, because everything pathwatch writes (config, database, generated password, optional log file) lives under `/data`. Without `DAC_OVERRIDE`, `/data` must be owned by root or be world-writable (on Synology run `chown root:root` on the folder, or add `DAC_OVERRIDE`). A `log.file` outside `/data` cannot be opened under `read_only`; pathwatch then logs to stderr only. A non-root profile needs a file capability on the binary (or datagram ICMP) and does not combine safely with `no-new-privileges` on every runtime; it is not the default. Compose example:
 
   ```yaml
   services:
     pathwatch:
       image: ghcr.io/i-press-buttons/pathwatch:latest
       network_mode: host           # accurate paths; avoids the Docker NAT hop
+      cap_drop: [ALL]
       cap_add: [NET_RAW]
+      security_opt: ["no-new-privileges:true"]
+      read_only: true
+      tmpfs: [/tmp]
       environment:
         PATHWATCH_PASSWORD: ${PATHWATCH_PASSWORD}
       volumes:
-        - ./config:/config          # pathwatch.yaml, optional TLS files
-        - ./data:/data              # SQLite DB: must be local disk, not NFS/SMB
+        - ./data:/data              # config, SQLite DB, password: must be local disk, not NFS/SMB
       restart: unless-stopped
   ```
 

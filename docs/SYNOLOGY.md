@@ -71,6 +71,8 @@ If you did not, pathwatch generated a random password on its first start. To rea
 
 The password is also saved in a file called `.pathwatch-password` inside your data folder (`/volume1/docker/pathwatch/.pathwatch-password`). In File Station, hidden files are shown with the **Settings** (three dots) -> **Show hidden files** option. Delete that file and set `PATHWATCH_PASSWORD` later if you would rather choose your own.
 
+Recommended: set `PATHWATCH_PASSWORD` in the stack yourself (at least 12 characters) instead of relying on the generated one, because anyone who can open the container logs in Portainer can read the generated password.
+
 ## 5. Open the dashboard
 
 Browse to:
@@ -82,6 +84,16 @@ http://<nas-ip>:8095
 Replace `<nas-ip>` with your NAS's address, for example `http://192.168.1.20:8095`. Log in as `admin`.
 
 pathwatch creates a starter configuration on first run with a few example targets (cloudflare.com with an HTTP check, 1.1.1.1 and 8.8.8.8), so you will see data within a minute or two. Add your own targets from the UI, or edit the config file (below).
+
+## Securing access
+
+pathwatch's web UI uses HTTP Basic auth. Over plain `http://` (the default) the password travels in clear text with every request, so anyone on the same network segment can capture it.
+
+- **Keep pathwatch LAN-only.** Do not port-forward 8095 on your router. Use the DSM firewall rule described under [Troubleshooting](#i-can-reach-the-nas-but-not-the-dashboard-synology-firewall) to allow only your local network.
+- **Set `PATHWATCH_PASSWORD`** in the stack (at least 12 characters; shorter passwords log a startup warning). Failed logins are rate-limited per client IP (HTTP 429) and logged as `authentication failed`.
+- **For remote access, use a VPN** (for example Synology's VPN Server or Tailscale), or put DSM's reverse proxy in front with HTTPS: Control Panel -> Login Portal -> Advanced -> Reverse Proxy -> Create. Source: HTTPS, your hostname, port 443 (or another port); destination: HTTP, `localhost`, port `8095`. Then set `public_url` in `pathwatch.yaml` to the HTTPS address, so alert links and the cross-site request check match.
+- With a reverse proxy on the NAS you can bind pathwatch to loopback only (`PATHWATCH_LISTEN: "127.0.0.1:8095"`). Authentication is then off unless `PATHWATCH_PASSWORD` is set, so keep the password set. While auth is off, requests whose `Host` header is not `localhost`, a loopback IP or the `public_url` host are rejected with HTTP 421, so `public_url` must contain the proxy's hostname.
+- Built-in TLS (`tls.cert_file` / `tls.key_file`) works too, but the image's plain-HTTP healthcheck then fails and Portainer shows the container as unhealthy. Override `healthcheck:` in the stack, or use the DSM reverse proxy instead.
 
 ## Updating
 
@@ -120,13 +132,28 @@ pathwatch needs raw network access to trace the path. Check the stack for both o
 
 ```yaml
 network_mode: host
+cap_drop:
+  - ALL
 cap_add:
   - NET_RAW
 ```
 
-Both must be present, and the container must run as root (the default for this image, so do not add a `user:` line). After fixing the stack, click **Update the stack**. In the container logs, look for a line that states which ICMP mode was detected.
+Both must be present (`NET_RAW` must not be dropped), and the container must run as root (the default for this image, so do not add a `user:` line). The stack also sets `security_opt: [no-new-privileges:true]`, `read_only: true` and a `/tmp` tmpfs; those do not affect ICMP. After fixing the stack, click **Update the stack**. In the container logs, look for a line that states which ICMP mode was detected.
 
 If you started the container some other way (for example from the Container Manager UI), make sure **Use the same network as Docker Host** is on and that `NET_RAW` is added under capabilities.
+
+### The container stops with "permission denied" on /data/pathwatch.yaml
+
+The stack drops all capabilities except `NET_RAW`, including `DAC_OVERRIDE`. Without it, root can only write to the data folder if the folder is owned by root or is writable by everyone. Folders created in File Station usually belong to your DSM user, so the first start fails with `write starter config: open /data/pathwatch.yaml: permission denied`. Pick one fix:
+
+- Over SSH: `sudo chown root:root /volume1/docker/pathwatch` (preferred; keeps the capability set minimal), or
+- In the stack, remove the `#` in front of `# - DAC_OVERRIDE` under `cap_add`.
+
+Existing installs whose files are already owned by root are not affected.
+
+### A log file outside /data is ignored
+
+The container's root filesystem is read-only, so a `log.file` outside `/data` cannot be opened. pathwatch prints `cannot open log file ...` and keeps logging to stderr, which Portainer shows under the container **Logs**. Use a path under `/data` (a relative path resolves next to `pathwatch.yaml`).
 
 ### "Port already in use" or the container keeps restarting
 

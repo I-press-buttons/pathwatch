@@ -31,7 +31,9 @@ Screenshots use demo data.
 ```sh
 docker run -d --name pathwatch \
   --network host \
-  --cap-add NET_RAW \
+  --cap-drop ALL --cap-add NET_RAW \
+  --security-opt no-new-privileges:true \
+  --read-only --tmpfs /tmp \
   --restart unless-stopped \
   -e TZ=Europe/London \
   -e PATHWATCH_PASSWORD='choose-a-long-password' \
@@ -39,9 +41,29 @@ docker run -d --name pathwatch \
   ghcr.io/i-press-buttons/pathwatch:latest
 ```
 
-Open <http://localhost:8095> and log in as `admin`. `--network host` makes probes follow your real traffic path, and `--cap-add NET_RAW` allows raw ICMP for hop tracing. If `PATHWATCH_PASSWORD` is omitted, a random one is saved to `/data/.pathwatch-password` and logged.
+Open <http://localhost:8095> and log in as `admin`. `--network host` makes probes follow your real traffic path, and `--cap-add NET_RAW` allows raw ICMP for hop tracing. The container runs as root but drops every other capability, cannot gain privileges, and has a read-only root filesystem; only `/data` is writable (see [Container hardening](#container-hardening)). If `PATHWATCH_PASSWORD` is omitted, a random one is saved to `/data/.pathwatch-password` and logged.
 
 To build from source (Go 1.26+, no C toolchain): `go build ./cmd/pathwatch && ./pathwatch run --config pathwatch.yaml`. A one-shot trace is available with `pathwatch trace <host>`.
+
+### Container hardening
+
+The image runs as root (raw ICMP sockets work most reliably that way on Synology kernels), so the examples confine that process: `--cap-drop ALL --cap-add NET_RAW` keeps the only capability pathwatch uses, `no-new-privileges` blocks privilege gain, and `--read-only` with a `/tmp` tmpfs leaves `/data` as the only writable path. The compose file and Portainer stack in `deploy/` use the same settings. To check: `docker exec pathwatch grep -E 'CapEff|NoNewPrivs' /proc/1/status` should show `0000000000002000` and `1`, and the log should contain `icmp_mode=raw`.
+
+- **Data folder ownership.** Without `DAC_OVERRIDE`, root can only write to `/data` if the host folder is owned by root or is world-writable. A folder owned by another user (typical on Synology, where File Station creates folders owned by your DSM user) fails at startup with `write starter config: open /data/pathwatch.yaml: permission denied`. Fix it with `sudo chown root:root <data folder>`, or add `--cap-add DAC_OVERRIDE`. Existing installs whose files are already root-owned are not affected.
+- **Log file location.** With `--read-only`, a `log.file` outside `/data` cannot be opened. pathwatch prints a warning and keeps logging to stderr (`docker logs`). A relative `log.file` resolves next to the config file, so it lands in `/data`.
+- **Non-root (advanced, not the default).** You can run with `user: "<uid>:<gid>"`, but the image has no file capability on the binary, so a non-root process gets no effective `NET_RAW` and raw ICMP fails; it only works with unprivileged datagram ICMP where the host's `net.ipv4.ping_group_range` allows it (often not enabled on Synology). The data folder must be owned by that uid. If you build your own image with `setcap cap_net_raw+ep` on the binary, do not combine that with `no-new-privileges` unless you have verified it on your runtime: file capabilities can be ignored under `no_new_privs` depending on the Docker/runc version, and with `+ep` a container started without `NET_RAW` in its bounding set will refuse to execute the binary at all.
+- `NET_RAW` on the host network also allows raw packet sockets on all host interfaces. That is inherent to raw ICMP mode.
+
+## Security
+
+- The web UI uses HTTP Basic auth. Over plain HTTP (the Docker default, `0.0.0.0:8095`) the password is sent in clear text with every request. Use it that way only on a network you trust, and do not forward port 8095 from the internet.
+- For remote access use a VPN, an HTTPS reverse proxy (Caddy, Traefik, Synology's built-in reverse proxy), or built-in TLS (`tls.cert_file` / `tls.key_file`). With built-in TLS the image's plain-HTTP healthcheck fails; override `healthcheck:` in your compose file (for example `wget -q --no-check-certificate -O- https://127.0.0.1:8095/healthz`) or terminate TLS in a reverse proxy instead.
+- Set `PATHWATCH_PASSWORD` yourself, and make it at least 12 characters (a shorter one logs a startup warning). A generated password is printed to the container log, where anyone with log access can read it, and stored in `/data/.pathwatch-password` (mode 0600).
+- On a loopback bind (for example `PATHWATCH_LISTEN=127.0.0.1:8095` behind a reverse proxy on the same machine) authentication is off unless `PATHWATCH_PASSWORD` is set, so set it. While auth is off, requests whose `Host` header is not `localhost`, a loopback IP or the `public_url` host are rejected with `421` (DNS-rebinding protection). A local reverse proxy in front of an auth-less instance must therefore have its public hostname in `public_url`; `X-Forwarded-Host` is not trusted for this check.
+- Every response carries `Content-Security-Policy` (including `frame-ancestors 'none'`), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`, so the UI cannot be framed by another site. `Strict-Transport-Security` is sent only with built-in TLS.
+- Failed login attempts are rate-limited per client IP (`429` with `Retry-After`) and logged at warn level as `authentication failed`, which fail2ban or similar can watch for. Behind a reverse proxy all clients may appear as the proxy's address, so limit access at the proxy too.
+- State-changing API calls (POST/PUT/PATCH/DELETE) are refused when cross-site, and endpoints with a body require `Content-Type: application/json`. Behind a reverse proxy, set `public_url` so the origin check matches the public address.
+- Webhook `body_template`s are not escaped automatically; see the template rules in [docs/SPEC.md](docs/SPEC.md#channels).
 
 ## Documentation
 

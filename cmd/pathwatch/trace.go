@@ -80,10 +80,6 @@ func traceCmd(args []string) int {
 		fmt.Fprintf(os.Stderr, "pathwatch trace: cannot resolve %s: %v\n", host, err)
 		return 1
 	}
-	if !dst.Is4() {
-		fmt.Fprintf(os.Stderr, "pathwatch trace: %s resolves to %s; only IPv4 is supported so far\n", host, dst)
-		return 1
-	}
 	p, m, err := probe.NewICMPProber(*mode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pathwatch trace: ICMP is unavailable: %v\n", err)

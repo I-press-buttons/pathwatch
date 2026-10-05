@@ -14,7 +14,7 @@ Give home labs, small networks and anyone troubleshooting flaky connectivity a f
 - **Rate-limit-aware alerting**: end-to-end probes decide; loss on an intermediate router alone never pages you. Hysteresis, cooldowns, silences, maintenance windows, and queued retries. Webhook (Discord, Slack, ntfy, generic) and email channels.
 - **MOS score** per target from latency, jitter and loss.
 - **Long-term history** in SQLite with automatic rollups and retention.
-- **Configurable from the UI or YAML**: manage targets (hostname, IPv4, IPv6), intervals, thresholds and alert rules in the browser, or keep everything in a version-controlled file.
+- **Configurable from the UI or YAML**: manage targets (hostname, IPv4, IPv6; hop tracing works over both families), intervals, thresholds and alert rules in the browser, or keep everything in a version-controlled file.
 - **Themes**: nine built-in, including Dark, Nord, Solarized and a green/yellow/red Classic scale.
 - **Pure Go, no CGO**: Linux (amd64, arm64, armv7) and Windows.
 

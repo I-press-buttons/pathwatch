@@ -272,12 +272,18 @@ func (f *dgramFlow) recvLoop() {
 		}
 		// Error queue first: Time Exceeded / Unreachable arrive here.
 		for {
-			n, oobn, _, _, err := unix.Recvmsg(f.fd, buf, oob, unix.MSG_ERRQUEUE|unix.MSG_DONTWAIT)
+			n, oobn, _, from, err := unix.Recvmsg(f.fd, buf, oob, unix.MSG_ERRQUEUE|unix.MSG_DONTWAIT)
 			recvAt := time.Now()
 			if err != nil {
 				break
 			}
-			f.handleErr(buf[:n], oob[:oobn], recvAt)
+			// For ICMP errors the kernel reports the original destination as the
+			// error-queue message's source address.
+			var origDst netip.Addr
+			if in4, ok := from.(*unix.SockaddrInet4); ok {
+				origDst = netip.AddrFrom4(in4.Addr)
+			}
+			f.handleErr(buf[:n], oob[:oobn], recvAt, origDst)
 		}
 		for {
 			n, from, err := unix.Recvfrom(f.fd, buf, unix.MSG_DONTWAIT)
@@ -301,7 +307,7 @@ func (f *dgramFlow) recvLoop() {
 	}
 }
 
-func (f *dgramFlow) handleErr(data, oob []byte, recvAt time.Time) {
+func (f *dgramFlow) handleErr(data, oob []byte, recvAt time.Time, origDst netip.Addr) {
 	msgs, err := unix.ParseSocketControlMessage(oob)
 	if err != nil {
 		return
@@ -330,7 +336,7 @@ func (f *dgramFlow) handleErr(data, oob []byte, recvAt time.Time) {
 		if !ok {
 			continue
 		}
-		f.pend.deliver(pendKey(f.id, seq), recvAt, st, src, netip.Addr{})
+		f.pend.deliver(pendKey(f.id, seq), recvAt, st, src, origDst)
 	}
 }
 

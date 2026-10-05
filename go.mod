@@ -2,6 +2,8 @@ module github.com/i-press-buttons/pathwatch
 
 go 1.26.0
 
+toolchain go1.26.8
+
 require (
 	github.com/oschwald/maxminddb-golang v1.13.1
 	go.yaml.in/yaml/v3 v3.0.5

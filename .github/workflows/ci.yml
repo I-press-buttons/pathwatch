@@ -3,6 +3,9 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    # Weekly, so new standard-library advisories show up between pushes.
+    - cron: '17 5 * * 1'
 
 permissions:
   contents: read
@@ -16,11 +19,13 @@ jobs:
     name: Format, vet, test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          # Latest 1.26 patch (same spec as release.yml), not the go.mod minimum.
+          go-version: '1.26.x'
+          check-latest: true
 
       - name: gofmt
         run: |
@@ -52,11 +57,13 @@ jobs:
           - goos: windows
             goarch: amd64
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          # Latest 1.26 patch (same spec as release.yml), not the go.mod minimum.
+          go-version: '1.26.x'
+          check-latest: true
 
       - name: Cross-build
         env:
@@ -64,3 +71,33 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: go build -trimpath -o /dev/null ./cmd/pathwatch
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        with:
+          # Must match the toolchain spec of release.yml; the action default is
+          # "stable", which could be a different minor release.
+          go-version-input: '1.26.x'
+          check-latest: true
+
+  actions-pinned:
+    name: Actions pinned to SHAs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Fail on any unpinned "uses:"
+        run: |
+          bad="$(grep -nE '^[[:space:]-]*uses:' .github/workflows/*.yml \
+            | grep -vE 'uses:[[:space:]]+\./' \
+            | grep -vE '@[0-9a-f]{40}([[:space:]]|$)' || true)"
+          if [ -n "$bad" ]; then
+            echo "These actions are not pinned to a full 40-character commit SHA:"
+            echo "$bad"
+            exit 1
+          fi

@@ -544,7 +544,7 @@ These additions take precedence over earlier sections where they conflict.
 - **Path views:** a hop grid (hop, IP, hostname, sent/lost, loss %, min/avg/max/cur/p95, jitter, classification, inline latency bar), the path timeline heatmap, and a latency/loss graph for the selected hop (default: destination). Clicking a hop row selects it. Also live updates via SSE.
 - **MOS score** per target from latency, jitter, and loss (simplified ITU-T G.107 E-model), shown in summary cards and the overview.
 - **Themes.** Several built-in themes selectable in the UI and remembered per browser: Auto (follows `prefers-color-scheme`), Light, Dark, Midnight, Nord, Solarized Light, Solarized Dark, High Contrast, and Classic (green/yellow/red latency scale). Each theme defines its UI colors and its latency/loss color scale.
-- **Image:** `ghcr.io/i-press-buttons/pathwatch`, multi-arch (linux/amd64, linux/arm64). Tags: `latest` from the default branch, `edge` from any other branch push, and semver tags on releases. Runs as root inside the container (simplest reliable raw-socket access on Synology kernels), with `network_mode: host` and `cap_add: [NET_RAW]`.
+- **Image:** `ghcr.io/i-press-buttons/pathwatch`, multi-arch (linux/amd64, linux/arm64). Tags: `latest` from the default branch, `edge` from the default branch too (branch and pull request builds are not published), and semver tags on releases. Runs as root inside the container (simplest reliable raw-socket access on Synology kernels), with `network_mode: host` and `cap_add: [NET_RAW]`.
 - **API contract:** see [API.md](API.md).
 
 ### Settings edited in the UI

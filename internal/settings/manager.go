@@ -462,6 +462,10 @@ func (m *Manager) CreateTarget(tc config.TargetConfig) (store.TargetRow, error) 
 	if err != nil {
 		return store.TargetRow{}, err
 	}
+	// The total is enforced here only, so a database already over the cap still starts.
+	if eff := m.Effective(); len(eff.Targets)+len(eff.UITargets) >= config.MaxTargets {
+		return store.TargetRow{}, invalid(fmt.Errorf("too many targets (limit %d, config-file and UI targets together); delete one first", config.MaxTargets))
+	}
 	s, err := m.load(m.Effective().Defaults)
 	if err != nil {
 		return store.TargetRow{}, err

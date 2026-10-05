@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/i-press-buttons/pathwatch/internal/config"
 )
 
 func TestEditTargetAPI(t *testing.T) {
@@ -201,5 +203,55 @@ func TestResolveAPI(t *testing.T) {
 	f.getJSON("/api/resolve?host=example.com:443", &r)
 	if r["valid"] != false || !strings.Contains(r["error"].(string), "port") {
 		t.Errorf("port: %+v", r)
+	}
+}
+
+func TestLimitsAPI(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	tcp := func(n int) []map[string]any {
+		ps := make([]map[string]any, n)
+		for i := range ps {
+			ps[i] = map[string]any{"type": "tcp", "port": 1000 + i}
+		}
+		return ps
+	}
+	// probes per target
+	if resp, b := f.postJSON("/api/targets", map[string]any{"name": "big", "host": "x.example", "probes": tcp(config.MaxProbesPerTarget + 1)}); resp.StatusCode != 400 || !strings.Contains(errMsg(b), "too many probes") {
+		t.Errorf("too many probes: %d %s", resp.StatusCode, b)
+	}
+	resp, b := f.postJSON("/api/targets", map[string]any{"name": "ok", "host": "x.example", "probes": tcp(config.MaxProbesPerTarget)})
+	if resp.StatusCode != 201 {
+		t.Fatalf("probes at the cap: %d %s", resp.StatusCode, b)
+	}
+	var tj map[string]any
+	_ = json.Unmarshal(b, &tj)
+	id := itoa(int64(tj["id"].(float64)))
+	if resp, b := f.do("PUT", "/api/targets/"+id, "application/json", map[string]any{"name": "ok", "host": "x.example", "probes": tcp(config.MaxProbesPerTarget + 1)}); resp.StatusCode != 400 || !strings.Contains(errMsg(b), "too many probes") {
+		t.Errorf("update past the cap: %d %s", resp.StatusCode, b)
+	}
+
+	// DNS probes
+	dns := func(n int) []map[string]any {
+		l := make([]map[string]any, n)
+		for i := range l {
+			l[i] = map[string]any{"name": "p" + itoa(int64(i)), "server": "192.0.2.53", "query": "example.com", "record": "A"}
+		}
+		return l
+	}
+	if resp, b := f.do("PUT", "/api/settings/dns_probes", "application/json", dns(config.MaxDNSProbes+1)); resp.StatusCode != 400 || !strings.Contains(errMsg(b), "too many DNS probes") {
+		t.Errorf("dns over the cap: %d %s", resp.StatusCode, b)
+	}
+	if resp, b := f.do("PUT", "/api/settings/dns_probes", "application/json", dns(config.MaxDNSProbes)); resp.StatusCode != 200 {
+		t.Errorf("dns at the cap: %d %s", resp.StatusCode, b)
+	}
+
+	// total targets
+	for i := 1; i < config.MaxTargets; i++ { // "ok" is the first
+		if resp, b := f.postJSON("/api/targets", map[string]any{"name": "t" + itoa(int64(i)), "host": "x.example"}); resp.StatusCode != 201 {
+			t.Fatalf("target %d: %d %s", i, resp.StatusCode, b)
+		}
+	}
+	if resp, b := f.postJSON("/api/targets", map[string]any{"name": "last", "host": "x.example"}); resp.StatusCode != 400 || !strings.Contains(errMsg(b), "too many targets") {
+		t.Errorf("target over the cap: %d %s", resp.StatusCode, b)
 	}
 }

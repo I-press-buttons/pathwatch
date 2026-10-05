@@ -94,8 +94,11 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if len(c.Targets) > maxConfigTarget {
-		add("too many targets (%d, max %d)", len(c.Targets), maxConfigTarget)
+	if len(c.Targets) > MaxTargets {
+		add("too many targets (%d, max %d)", len(c.Targets), MaxTargets)
+	}
+	if len(c.DNSProbes) > MaxDNSProbes {
+		add("too many DNS probes (%d, max %d)", len(c.DNSProbes), MaxDNSProbes)
 	}
 	names := map[string]bool{}
 	ruleKeys := map[string]bool{}

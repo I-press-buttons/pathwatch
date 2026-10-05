@@ -2,19 +2,21 @@ name: Docker image
 
 # Publishes ghcr.io/i-press-buttons/pathwatch (linux/amd64 + linux/arm64).
 #
-#   push to default branch  -> latest, sha-<short>
-#   push to any other branch -> edge,   sha-<short>
-#   push of tag vX.Y.Z      -> X.Y.Z, X.Y, sha-<short>
+#   push to main        -> latest, edge, sha-<short>
+#   push of tag vX.Y.Z  -> X.Y.Z, X.Y, sha-<short>
+#   pull request        -> build check only; nothing is pushed and the job
+#                          holds no packages: write permission
+#
+# Other branches and manual runs never publish. Each published image gets a
+# build provenance attestation (verify with `gh attestation verify`, see README).
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
     tags: ["v*"]
-  workflow_dispatch:
+  pull_request:
 
-permissions:
-  contents: read
-  packages: write
+permissions: {}
 
 concurrency:
   group: docker-${{ github.ref }}
@@ -25,9 +27,15 @@ env:
 
 jobs:
   image:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # provenance attestation (Sigstore)
+      attestations: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Compute version string
         id: version
@@ -40,11 +48,11 @@ jobs:
 
       # QEMU is only needed to run the arm64 *runtime* stage (apk add); the Go
       # compile itself is a native cross-compile.
-      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - uses: docker/login-action@v4
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -52,15 +60,15 @@ jobs:
 
       - name: Image metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE }}
-          # "latest" is handled explicitly below (default branch only).
+          # "latest" and "edge" are handled explicitly below (default branch only).
           flavor: |
             latest=false
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=edge,enable=${{ github.ref_type == 'branch' && github.ref_name != github.event.repository.default_branch }}
+            type=raw,value=edge,enable={{is_default_branch}}
             type=sha,prefix=sha-,format=short
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -70,7 +78,8 @@ jobs:
             org.opencontainers.image.licenses=MIT
 
       - name: Build and push
-        uses: docker/build-push-action@v7
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -79,7 +88,35 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ steps.version.outputs.value }}
-          # Keeps the GHCR package page free of "unknown/unknown" attestation entries.
+          # Keeps the GHCR package page free of "unknown/unknown" attestation
+          # entries; provenance is attested via GitHub attestations below.
           provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          # Must be lowercase (github.repository is not guaranteed to be).
+          subject-name: ghcr.io/i-press-buttons/pathwatch
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: false
+
+  build-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build (no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          provenance: false
+          cache-from: type=gha

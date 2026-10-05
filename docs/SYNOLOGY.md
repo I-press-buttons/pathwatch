@@ -145,13 +145,13 @@ If you use the DSM firewall (Control Panel -> Security -> Firewall), add an allo
 | Tag | What it is |
 |---|---|
 | `latest` | The newest build of the main branch. The default, and the right choice for most people. |
-| `edge` | The newest build from any other branch. For testing unreleased changes; may break. |
+| `edge` | Also built from the main branch (same commits as `latest`). Branch and pull request builds are never published. |
 | `1.2.3`, `1.2` | A specific release. Use these if you want to update only when you decide to. |
 | `sha-abc1234` | One exact commit. Handy when reporting a bug. |
 
 Change the tag in the `image:` line of the stack and update the stack.
 
-> **Before the first release:** `latest` appears once the code is merged into the `main` branch. Until then, only `edge` exists. If Portainer reports `manifest unknown` for `latest`, change the image line to `ghcr.io/i-press-buttons/pathwatch:edge`.
+> **Before the first release:** `latest` and `edge` appear once the code is merged into the `main` branch. Until then, Portainer reports `manifest unknown`.
 
 ### Which Synology models work
 

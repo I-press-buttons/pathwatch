@@ -43,6 +43,15 @@ Open <http://localhost:8095> and log in as `admin`. `--network host` makes probe
 
 To build from source (Go 1.26, latest patch release recommended; no C toolchain): `go build ./cmd/pathwatch && ./pathwatch run --config pathwatch.yaml`. A one-shot trace is available with `pathwatch trace <host>`.
 
+### Verifying downloads
+
+Release archives and the Docker image carry build provenance attestations. Verify them with the `gh` CLI:
+
+```sh
+gh attestation verify pathwatch_X.Y.Z_linux_amd64.tar.gz --repo I-press-buttons/pathwatch
+gh attestation verify oci://ghcr.io/i-press-buttons/pathwatch:X.Y.Z --repo I-press-buttons/pathwatch
+```
+
 ## Documentation
 
 - [docs/SYNOLOGY.md](docs/SYNOLOGY.md): Synology + Portainer deployment

@@ -8,10 +8,9 @@
 
 services:
   pathwatch:
-    # "latest" follows the main branch. Use "edge" for the newest test build,
-    # or pin a release such as ghcr.io/i-press-buttons/pathwatch:1.0.0
-    # (Before the first merge to main only "edge" exists; use it if "latest"
-    # reports "manifest unknown".)
+    # "latest" and "edge" both follow the main branch (branch and PR builds
+    # are never published). Or pin a release such as
+    # ghcr.io/i-press-buttons/pathwatch:1.0.0
     image: ghcr.io/i-press-buttons/pathwatch:latest
     container_name: pathwatch
 

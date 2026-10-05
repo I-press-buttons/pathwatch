@@ -497,6 +497,7 @@ func (s *Server) handleTargetConfig(w http.ResponseWriter, r *http.Request) {
 	if def.Target.Probes == nil {
 		def.Target.Probes = []config.ProbeConfig{}
 	}
+	def.Target = config.RedactTarget(def.Target) // header values are write-only
 	writeJSON(w, http.StatusOK, targetConfigJSON{ID: row.ID, Source: row.Source, Overridden: def.Overridden, Target: def.Target})
 }
 

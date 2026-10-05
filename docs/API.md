@@ -102,7 +102,11 @@ Unknown fields are rejected.
 `GET /api/targets/{id}/config` → `{"id", "source", "overridden", "target": <definition>}`. The
 definition is normalized for editing: an implied icmp-trace probe is listed, target-level
 intervals and retries are moved onto the probes, and alert settings keyed by rule type are
-expanded to rule names.
+expanded to rule names. Literal HTTP probe header values are returned as the placeholder
+`********`; values that are `${PATHWATCH_PROBE_*}` references are returned as written. Send the
+placeholder back in `PUT` to keep the stored value for the same probe (method + URL) and header
+name; if the probe's URL or method changed, the request is rejected (400) and the value must be
+entered again. The placeholder is rejected when creating a target.
 
 `PUT /api/targets/{id}` with a definition → 200, the target object. Applies immediately. A UI
 target may be renamed (its history is kept). A config-file target keeps its name (400 on a

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -90,9 +91,11 @@ func Open(path string, o Options) (*Store, error) {
 	if o.FlushInterval == 0 {
 		o.FlushInterval = time.Second
 	}
-	if dir := filepath.Dir(path); dir != "" {
-		// the parent directory must exist; the caller creates it
-		_ = dir
+	// The parent directory must exist; the caller creates it. Create the file owner-only
+	// ourselves: SQLite gives the -wal and -shm files the mode of the main file, and would
+	// otherwise create it 0644 & ~umask. An existing file keeps its mode.
+	if f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600); err == nil {
+		f.Close()
 	}
 	dsn := func(readonly bool) string {
 		q := url.Values{}

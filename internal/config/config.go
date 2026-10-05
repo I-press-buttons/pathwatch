@@ -214,10 +214,10 @@ func Load(path string, opts LoadOptions) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) && opts.CreateIfMissing {
-			if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr != nil {
+			if mkErr := os.MkdirAll(filepath.Dir(path), 0o700); mkErr != nil {
 				return nil, fmt.Errorf("create config dir: %w", mkErr)
 			}
-			if wErr := os.WriteFile(path, []byte(StarterConfig), 0o644); wErr != nil {
+			if wErr := os.WriteFile(path, []byte(StarterConfig), 0o600); wErr != nil {
 				return nil, fmt.Errorf("write starter config: %w", wErr)
 			}
 			data = []byte(StarterConfig)
@@ -418,7 +418,7 @@ func (c *Config) ResolveAuth(getenv func(string) string) (Auth, error) {
 	if err != nil {
 		return a, err
 	}
-	if err := os.MkdirAll(c.DataDir(), 0o755); err != nil {
+	if err := os.MkdirAll(c.DataDir(), 0o700); err != nil {
 		return a, fmt.Errorf("create data dir: %w", err)
 	}
 	if err := os.WriteFile(a.FilePath, []byte(pw+"\n"), 0o600); err != nil {

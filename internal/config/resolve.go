@@ -79,7 +79,7 @@ func (p Probe) Key() string {
 func (p Probe) Label() string {
 	switch p.Type {
 	case ProbeHTTP:
-		return p.Method + " " + p.URL
+		return p.Method + " " + maskUserinfo(p.URL)
 	case ProbeTCP:
 		return fmt.Sprintf("TCP :%d", p.Port)
 	case ProbeICMPTrace:

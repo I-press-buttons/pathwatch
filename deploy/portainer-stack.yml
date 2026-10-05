@@ -8,10 +8,9 @@
 
 services:
   pathwatch:
-    # "latest" follows the main branch. Use "edge" for the newest test build,
-    # or pin a release such as ghcr.io/i-press-buttons/pathwatch:1.0.0
-    # (Before the first merge to main only "edge" exists; use it if "latest"
-    # reports "manifest unknown".)
+    # "latest" and "edge" both follow the main branch (branch and PR builds
+    # are never published). Or pin a release such as
+    # ghcr.io/i-press-buttons/pathwatch:1.0.0
     image: ghcr.io/i-press-buttons/pathwatch:latest
     container_name: pathwatch
 
@@ -23,10 +22,26 @@ services:
     # needed or used).
     network_mode: host
 
-    # Permission to open raw ICMP sockets. Needed to trace hops (TTL-limited
-    # probes). Without it pathwatch falls back to icmp_mode "unavailable".
+    # Hardened profile. pathwatch still runs as root, but keeps only the one
+    # capability it needs: NET_RAW, to open raw ICMP sockets for tracing hops
+    # (TTL-limited probes). Without it pathwatch falls back to icmp_mode
+    # "unavailable". Everything pathwatch writes lives in /data, so the rest
+    # of the filesystem is read-only.
+    cap_drop:
+      - ALL
     cap_add:
       - NET_RAW
+      # Synology: if the container fails at start with "permission denied"
+      # writing /data/pathwatch.yaml, the data folder is owned by your DSM
+      # user and root lacks DAC_OVERRIDE. Either run
+      #   sudo chown root:root /volume1/docker/pathwatch
+      # over SSH (preferred), or remove the "#" from the next line.
+      # - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp   # scratch space only (SQLite temp files); /data is the only persistent path
 
     restart: unless-stopped
 

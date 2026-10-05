@@ -25,13 +25,25 @@ const (
 
 // Defaults for settings that are not configured.
 const (
-	DefaultListen   = "127.0.0.1:8080"
-	DefaultUser     = "admin"
-	DefaultDBName   = "pathwatch.db"
-	DefaultConfig   = "pathwatch.yaml"
-	PasswordFile    = ".pathwatch-password"
-	defaultMaxBody  = 1 << 20
-	maxConfigTarget = 200
+	DefaultListen  = "127.0.0.1:8080"
+	DefaultUser    = "admin"
+	DefaultDBName  = "pathwatch.db"
+	DefaultConfig  = "pathwatch.yaml"
+	PasswordFile   = ".pathwatch-password"
+	defaultMaxBody = 1 << 20
+)
+
+// Limits shared by the config file and the web UI, so a write API cannot make the instance run
+// an unbounded number of probes.
+const (
+	// MaxTargets bounds the targets defined in the config file, and the config-file plus
+	// UI-created targets together when a target is created. It is checked on create only for the
+	// UI: a database that already holds more still starts (see settings.Manager.CreateTarget).
+	MaxTargets = 200
+	// MaxProbesPerTarget bounds the probes listed on one target.
+	MaxProbesPerTarget = 16
+	// MaxDNSProbes bounds the DNS probes (file or UI).
+	MaxDNSProbes = 50
 )
 
 // Config is the top-level YAML document.
@@ -202,10 +214,10 @@ func Load(path string, opts LoadOptions) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) && opts.CreateIfMissing {
-			if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr != nil {
+			if mkErr := os.MkdirAll(filepath.Dir(path), 0o700); mkErr != nil {
 				return nil, fmt.Errorf("create config dir: %w", mkErr)
 			}
-			if wErr := os.WriteFile(path, []byte(StarterConfig), 0o644); wErr != nil {
+			if wErr := os.WriteFile(path, []byte(StarterConfig), 0o600); wErr != nil {
 				return nil, fmt.Errorf("write starter config: %w", wErr)
 			}
 			data = []byte(StarterConfig)
@@ -406,7 +418,7 @@ func (c *Config) ResolveAuth(getenv func(string) string) (Auth, error) {
 	if err != nil {
 		return a, err
 	}
-	if err := os.MkdirAll(c.DataDir(), 0o755); err != nil {
+	if err := os.MkdirAll(c.DataDir(), 0o700); err != nil {
 		return a, fmt.Errorf("create data dir: %w", err)
 	}
 	if err := os.WriteFile(a.FilePath, []byte(pw+"\n"), 0o600); err != nil {

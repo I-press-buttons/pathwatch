@@ -105,6 +105,8 @@ Use `net/http/httptrace` to capture, per request: DNS lookup, TCP connect, TLS h
 - **Proxy environment variables are ignored by default** (`HTTP_PROXY`, `HTTPS_PROXY`), otherwise we would be measuring the proxy. Opt in with `use_env_proxy: true`.
 - Method GET or HEAD. For GET, the body is read and discarded up to `max_body` (default 1 MiB) to measure transfer time.
 - Optional: `expect_status` (one code or a list), `timeout`, `follow_redirects` (default false), custom `headers`, `user_agent` (default `pathwatch/<version>`), `insecure_skip_verify` for internal targets.
+- **Header secrets:** `headers` values may reference environment variables as `${NAME}`, expanded when each request is built and never stored or returned expanded (the definition keeps the `${...}` text). Only names starting with `PATHWATCH_PROBE_` are readable; a reference to any other variable (`PATHWATCH_PASSWORD`, the SMTP password, ...) expands to the empty string, because targets can be created through the API and must not be able to exfiltrate other secrets. Write `$$` for a literal `$`. A literal value still works but is stored as written (in the YAML file or the database), so prefer `Authorization: Bearer ${PATHWATCH_PROBE_TOKEN}`.
+- **Header handling elsewhere:** `GET /api/targets/{id}/config` replaces literal header values with `********` (values that are only `${...}` references, optionally after `Bearer`/`Basic`/`Token`, stay visible); a `PUT` that sends `********` keeps the stored value for the same probe (method + URL) and header name, and is rejected with "re-enter the header value" if the probe's URL or method changed. When following redirects, the configured headers are dropped from any hop whose scheme, host or port differs from the original URL. A password in the URL (`https://user:pass@host/`) is masked in the probe label, but still part of the probe key; prefer headers.
 - When following redirects, phase timings are those of the first request; `total` covers the whole chain; the final URL and redirect count are recorded.
 - The DNS phase uses the system resolver. When `pin_ip` is on (the default), the DNS phase reflects the per-cycle resolution. Note that the OS resolver cache usually makes it near-zero. For real resolver health, use the DNS probe.
 - **TLS certificate expiry:** record the leaf certificate's `NotAfter` on every HTTPS probe; the `cert_expiry` alert rule warns ahead of expiry.
@@ -275,10 +277,14 @@ All times are stored in UTC and displayed in the browser's local timezone.
 
 ## Access and security
 
-- The binary binds to `127.0.0.1:8080` by default. The Docker image defaults to `0.0.0.0:8080`.
-- If `listen` is not a loopback address, Basic auth must be configured or startup fails. There is no "no auth" mode.
-- Optional built-in TLS: `tls.cert_file` and `tls.key_file`. Without TLS, Basic auth credentials cross the network in clear text. The README recommends TLS or a reverse proxy (Caddy, Traefik, Synology's built-in proxy) for anything beyond a trusted LAN.
-- Passwords are compared in constant time. The API is same-origin only, and the one state-changing endpoint (silences) requires a JSON content type, which blocks simple cross-site form posts.
+- **Bind address.** The binary binds to `127.0.0.1:8080` by default. The Docker image sets `PATHWATCH_LISTEN=0.0.0.0:8095`, so the web UI is reachable from the whole network by default.
+- **Authentication.** If `listen` is not a loopback address, Basic auth is always on. When no password is configured (`auth.basic_password_env` / `PATHWATCH_PASSWORD`), pathwatch generates one on first start, stores it in `/data/.pathwatch-password` (mode 0600; next to the database) and logs it once. Anyone with access to the container logs or the data folder can read it, so setting `PATHWATCH_PASSWORD` explicitly is recommended. On a loopback bind with no password configured, authentication is off and a log line says so. `/healthz` is exempt from auth.
+- **Weak passwords and brute force.** A startup warning is logged when `PATHWATCH_PASSWORD` is shorter than 12 characters. Failed Basic-auth attempts are rate-limited per client IP (IPv6 per /64; `X-Forwarded-For` is ignored): after three wrong guesses the client gets `429` with a `Retry-After` header, without its credentials being checked, for a backoff that starts at 250 ms and doubles per further failure up to 5 minutes. A successful login resets it; requests without credentials are not counted. Failures are logged at warn level with the message `authentication failed` and the remote address (at most once per client per minute, with the count since the last line; suitable for fail2ban). Behind a reverse proxy the client IP is the proxy's, so rate-limit at the proxy as well.
+- **Clear-text credentials.** Without TLS, Basic auth credentials cross the network in clear text. Use plain HTTP only on a trusted LAN and never forward the port from the internet. For anything else use a VPN, an HTTPS reverse proxy (Caddy, Traefik, Synology's built-in reverse proxy) or built-in TLS (`tls.cert_file` and `tls.key_file`). The README "Security" section and docs/SYNOLOGY.md ("Securing access") repeat this for users. The image's healthcheck is plain HTTP (`GET /healthz` via `deploy/healthcheck.sh`), so with built-in TLS it fails: override `healthcheck:` in the compose file (for example a `wget --no-check-certificate` call to `https://127.0.0.1:8095/healthz`) or terminate TLS in a reverse proxy instead.
+- **DNS-rebinding protection.** While authentication is off, requests whose `Host` header is not `localhost`, an address in `127.0.0.0/8`, `::1`, or the host of `public_url` are rejected with `421 Misdirected Request`. `X-Forwarded-Host` is deliberately not trusted for this check. A local reverse proxy in front of an auth-less loopback instance therefore needs its public hostname in `public_url` (or, better, a password, which turns authentication on and this check off).
+- **Security headers.** Every response carries `Content-Security-Policy` (with `frame-ancestors 'none'`), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`, so the UI cannot be framed. `Strict-Transport-Security` is added only when built-in TLS is enabled.
+- **CSRF model.** The API is same-origin only. Every request with a method other than GET, HEAD or OPTIONS passes the `sameOrigin` check: it is accepted when `Sec-Fetch-Site` is `same-origin` or `none` and refused when it is `cross-site` or `same-site`. When the header is absent (older browsers) the `Origin` header, if present, must match `Host`, the first `X-Forwarded-Host` value, or the host of `public_url`; requests without an `Origin` (curl, scripts) pass. Endpoints that take a body (targets, settings, silences) also require `Content-Type: application/json`, which blocks simple cross-site form posts; body-less ones (DELETE, pause/resume) rely on `sameOrigin` alone. Reverse-proxy users should set `public_url` and forward `X-Forwarded-Host`, since both feed this check.
+- Passwords are compared in constant time.
 - `public_url` (for example `https://nas.local:8080`) builds deep links in alerts. Without it, alerts omit the link.
 - Never log secrets.
 
@@ -336,7 +342,17 @@ Optional: `heartbeat.url` gets a GET every `heartbeat.interval` while pathwatch 
 
 ### Channels
 
-- **Webhook:** POST JSON containing target, rule, state (firing or resolved; `event` for one-shot `route_change` alerts), current value, baseline, timestamps (RFC 3339 and Unix ms), and a deep link (if `public_url` is set). The URL comes from `url_env` and, like header values, is never logged; header values may use `${ENV_VAR}`. Requests time out after 10s and a non-2xx response counts as a failure. Presets for `discord`, `slack` (and Slack-compatible), `ntfy`, and `generic` (raw JSON, for n8n or Home Assistant). A custom body is possible via a Go `text/template`. Optional custom headers (values may reference environment variables).
+- **Webhook:** POST JSON containing target, rule, state (firing or resolved; `event` for one-shot `route_change` alerts), current value, baseline, timestamps (RFC 3339 and Unix ms), and a deep link (if `public_url` is set). The URL comes from `url_env` and, like header values, is never logged; header values may use `${ENV_VAR}`. Requests time out after 10s and a non-2xx response counts as a failure. Presets for `discord`, `slack` (and Slack-compatible), `ntfy`, and `generic` (raw JSON, for n8n or Home Assistant). A custom body is possible via a Go `text/template`. A custom body for Discord must use `{{json .Message}}` and include `"allowed_mentions": {"parse": []}`, because alert text can contain text chosen by the probed server and would otherwise be able to ping `@everyone`. Optional custom headers (values may reference environment variables).
+
+  **Custom body (`body_template`).** The body is a Go `text/template` rendered with these fields: `AlertID`, `Title` (for example `FIRING cloudflare: http-slow`), `State` (`firing`, `resolved` or `event`), `Target`, `TargetID` (0 when the alert has no target), `Rule`, `RuleType`, `Message`, `Value`, `PeakValue`, `Baseline` (numbers), `Unit`, `ValueText` (for example `412 ms`), `BaselineText`, `StartedAt` and `EndedAt` (RFC 3339 UTC; `EndedAt` is empty while firing), `StartedAtMS` and `EndedAtMS` (Unix ms; 0 while firing), `Duration` (for example `5m3s`), `DurationSeconds`, `Link` (empty without `public_url`) and `Details` (a JSON string). Helper functions: `json` (JSON-encodes any value, including the surrounding quotes), `upper`, `lower` and `trim`.
+
+  `text/template` does no escaping. Target and rule names are user-entered, and `Message` can contain the last probe error (up to 160 characters), which may include text derived from the remote side such as a TLS certificate host name. A value containing `"`, a backslash or a newline inside a hand-quoted JSON string yields invalid JSON, or lets the value inject extra JSON fields. **When building JSON, wrap every string field in `{{json ...}}` and do not add your own quotes around it:**
+
+  ```yaml
+  body_template: '{"text": {{json .Title}}, "target": {{json .Target}}, "rule": {{json .Rule}}, "state": {{json .State}}, "message": {{json .Message}}, "link": {{json .Link}}, "value": {{.Value}}}'
+  ```
+
+  Numeric fields (`Value`, `PeakValue`, `Baseline`, `AlertID`, ...) may be inserted bare.
 - **Email:** SMTP with host, port, and TLS mode `starttls` (587), `tls` (implicit TLS, 465), or `none`. Username and password come from environment variables. One message per alert event, not per probe.
 - **Routing:** each rule may list the channels it notifies (default: all). For example, route changes could go to the webhook only.
 
@@ -471,7 +487,7 @@ alerts:
       url_env: PATHWATCH_WEBHOOK_URL  # webhook URLs often embed tokens
       preset: discord                 # discord | slack | ntfy | generic
       headers: {}
-      # body_template: '{"text": "{{.Target}} {{.Rule}} {{.State}}"}'
+      # body_template: '{"text": {{json .Title}}, "target": {{json .Target}}}'   # always {{json ...}} for strings
     email:
       smtp_host: smtp.example.com
       smtp_port: 587
@@ -488,23 +504,27 @@ Config rules:
 - Target `name` is the stable identity in the database. Renaming a target starts a new history, so the README says so. Changing `host` starts a new path version.
 - Targets removed from config keep their data and are marked inactive (hidden by default, shown with a toggle).
 - Config changes take effect on restart (or `SIGHUP` on Linux, which reloads targets, rules, and channels). Full hot reload is a later item.
-- Secrets are only read from environment variables, never inline.
+- Secrets are read from environment variables, never inline (probe header values can opt in with `${PATHWATCH_PROBE_*}`; see HTTP/HTTPS probes).
+- New data directories are created `0700`, and the database and starter config `0600`. Existing files keep their mode; a startup warning is logged when the config or database is readable by group or others.
 
 ## Distribution
 
-- **Docker (primary):** multi-arch image (linux/amd64, linux/arm64) published to GHCR on every tag. Minimal base (`distroless/static` or `scratch` with CA certificates and tzdata), runs as non-root. The binary carries the `cap_net_raw` file capability, so raw sockets work when the container is granted `NET_RAW`. Datagram mode needs no capability where `ping_group_range` allows it. Compose example:
+- **Docker (primary):** multi-arch image (linux/amd64, linux/arm64) published to GHCR on every tag. Alpine base with CA certificates and tzdata (a shell is kept for debugging). The container runs as root: raw ICMP sockets work reliably as root + `NET_RAW` on Synology kernels, where unprivileged datagram ICMP (`ping_group_range`) is often not enabled. The binary carries no file capability. The shipped compose files confine the root process: `cap_drop: [ALL]` plus `cap_add: [NET_RAW]`, `no-new-privileges`, `read_only: true` and a `/tmp` tmpfs, because everything pathwatch writes (config, database, generated password, optional log file) lives under `/data`. Without `DAC_OVERRIDE`, `/data` must be owned by root or be world-writable (on Synology run `chown root:root` on the folder, or add `DAC_OVERRIDE`). A `log.file` outside `/data` cannot be opened under `read_only`; pathwatch then logs to stderr only. A non-root profile needs a file capability on the binary (or datagram ICMP) and does not combine safely with `no-new-privileges` on every runtime; it is not the default. Compose example:
 
   ```yaml
   services:
     pathwatch:
       image: ghcr.io/i-press-buttons/pathwatch:latest
       network_mode: host           # accurate paths; avoids the Docker NAT hop
+      cap_drop: [ALL]
       cap_add: [NET_RAW]
+      security_opt: ["no-new-privileges:true"]
+      read_only: true
+      tmpfs: [/tmp]
       environment:
         PATHWATCH_PASSWORD: ${PATHWATCH_PASSWORD}
       volumes:
-        - ./config:/config          # pathwatch.yaml, optional TLS files
-        - ./data:/data              # SQLite DB: must be local disk, not NFS/SMB
+        - ./data:/data              # config, SQLite DB, password: must be local disk, not NFS/SMB
       restart: unless-stopped
   ```
 
@@ -527,7 +547,7 @@ These additions take precedence over earlier sections where they conflict.
 - **Path views:** a hop grid (hop, IP, hostname, sent/lost, loss %, min/avg/max/cur/p95, jitter, classification, inline latency bar), the path timeline heatmap, and a latency/loss graph for the selected hop (default: destination). Clicking a hop row selects it. Also live updates via SSE.
 - **MOS score** per target from latency, jitter, and loss (simplified ITU-T G.107 E-model), shown in summary cards and the overview.
 - **Themes.** Several built-in themes selectable in the UI and remembered per browser: Auto (follows `prefers-color-scheme`), Light, Dark, Midnight, Nord, Solarized Light, Solarized Dark, High Contrast, and Classic (green/yellow/red latency scale). Each theme defines its UI colors and its latency/loss color scale.
-- **Image:** `ghcr.io/i-press-buttons/pathwatch`, multi-arch (linux/amd64, linux/arm64). Tags: `latest` from the default branch, `edge` from any other branch push, and semver tags on releases. Runs as root inside the container (simplest reliable raw-socket access on Synology kernels), with `network_mode: host` and `cap_add: [NET_RAW]`.
+- **Image:** `ghcr.io/i-press-buttons/pathwatch`, multi-arch (linux/amd64, linux/arm64). Tags: `latest` from the default branch, `edge` from the default branch too (branch and pull request builds are not published), and semver tags on releases. Runs as root inside the container (simplest reliable raw-socket access on Synology kernels), with `network_mode: host` and `cap_add: [NET_RAW]`.
 - **API contract:** see [API.md](API.md).
 
 ### Settings edited in the UI
@@ -538,6 +558,8 @@ Everything about what is monitored and when it alerts has a UI control:
 - **Settings page:** probe defaults (every interval and timeout, max hops, rediscovery, retries), status thresholds (when a target turns "degraded"), alert rules (add, remove, enable, thresholds, channel routing, cooldown, clear ratio), and DNS probes.
 
 Storage and precedence: UI edits are stored in the database (`settings` table and `targets.spec`) and layered over the config file. An edited section (defaults, status, alerts, DNS probes) replaces the file's section; an edited config-file target is replaced by its edited definition (matched by name). Each can be reverted to the file in the UI. Changes apply immediately without a restart, and SIGHUP reloads keep the UI edits. If stored settings no longer fit a changed config file (for example a rule they refer to was removed), pathwatch logs it and falls back to the file's sections rather than failing to start.
+
+**Limits.** At most 200 targets (config-file and UI-created together), 16 probes per target and 50 DNS probes. They apply to the config file (more is a validation error) and to the API (400 with the message), so a client with write access cannot make the instance run an unbounded number of probes. The 200-target total is checked when a target is created; a database that already holds more (from an older version) still starts, keeps its targets and only refuses new ones. A stored UI target over the probe cap is logged and not run until it is edited down; stored DNS probe lists over the cap fall back to the file's, as for any other stored setting that no longer fits.
 
 **Hosts.** A target host is a hostname (fully qualified, with or without a trailing dot, or a short name completed by the system resolver), an IPv4 address or an IPv6 address (brackets accepted). Hosts are normalized; URLs and `host:port` are rejected with a message that says what to change. The UI shows what kind of host was entered and can resolve it before saving. Hostnames are re-resolved every `path_rediscovery` and the IPv4 address is preferred. Hop tracing is IPv4-only (see Later); HTTP and TCP probes work over IPv6.
 

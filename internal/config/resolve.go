@@ -79,7 +79,7 @@ func (p Probe) Key() string {
 func (p Probe) Label() string {
 	switch p.Type {
 	case ProbeHTTP:
-		return p.Method + " " + p.URL
+		return p.Method + " " + maskUserinfo(p.URL)
 	case ProbeTCP:
 		return fmt.Sprintf("TCP :%d", p.Port)
 	case ProbeICMPTrace:
@@ -252,6 +252,9 @@ func ResolveTarget(tc TargetConfig, d Defaults) (Target, error) {
 	}
 	if tc.Retries != nil && (*tc.Retries < 0 || *tc.Retries > MaxRetries) {
 		add("retries must be between 0 and %d", MaxRetries)
+	}
+	if len(tc.Probes) > MaxProbesPerTarget {
+		add("too many probes (%d, max %d)", len(tc.Probes), MaxProbesPerTarget)
 	}
 	probes := tc.Probes
 	if len(probes) == 0 {

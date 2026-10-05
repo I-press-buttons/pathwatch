@@ -195,7 +195,7 @@ func TestCanceledRequest(t *testing.T) {
 	cancel()
 	for _, u := range urls {
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest("GET", u, nil).WithContext(ctx))
+		h.ServeHTTP(w, loopbackReq("GET", u).WithContext(ctx))
 		if w.Code == http.StatusInternalServerError || strings.Contains(w.Body.String(), "internal error") {
 			t.Errorf("GET %s answered a gone client with %d %s", u, w.Code, w.Body.String())
 		}
@@ -207,8 +207,16 @@ func TestCanceledRequest(t *testing.T) {
 	// a store that fails for another reason is still a 500, logged
 	f.st.Close()
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/overview?range=1h", nil))
+	h.ServeHTTP(w, loopbackReq("GET", "/api/overview?range=1h"))
 	if w.Code != http.StatusInternalServerError || !strings.Contains(logs.String(), "request failed") {
 		t.Errorf("closed store: %d %s, log %q", w.Code, w.Body.String(), logs.String())
 	}
+}
+
+// loopbackReq is an in-process request addressed to a loopback Host (httptest defaults to
+// example.com, which the Host check of an unauthenticated server refuses).
+func loopbackReq(method, target string) *http.Request {
+	r := httptest.NewRequest(method, target, nil)
+	r.Host = "127.0.0.1:8095"
+	return r
 }

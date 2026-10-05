@@ -49,11 +49,13 @@ func (p *pendingTable) take(key uint32) *waiter {
 }
 
 // deliver completes the waiter for key (if still pending) with a reply received at recvAt.
-// origDst, when valid, must match the waiter's destination (error messages only).
+// An Echo Reply must come from the probed destination; an ICMP error may come from any
+// router but, when origDst is known, must quote the probed destination. Anything else is
+// not ours: the waiter stays pending so the genuine reply can still complete it.
 func (p *pendingTable) deliver(key uint32, recvAt time.Time, status Status, addr netip.Addr, origDst netip.Addr) {
 	p.mu.Lock()
 	w := p.m[key]
-	if w == nil || (origDst.IsValid() && w.dst.IsValid() && origDst != w.dst) {
+	if w == nil || !w.accepts(status, addr, origDst) {
 		p.mu.Unlock()
 		return
 	}
@@ -64,6 +66,16 @@ func (p *pendingTable) deliver(key uint32, recvAt time.Time, status Status, addr
 		rtt = 0
 	}
 	w.ch <- Result{Status: status, Addr: addr, RTT: rtt}
+}
+
+func (w *waiter) accepts(status Status, addr, origDst netip.Addr) bool {
+	if !w.dst.IsValid() {
+		return true
+	}
+	if status == StatusReply {
+		return addr.Unmap() == w.dst
+	}
+	return !origDst.IsValid() || origDst.Unmap() == w.dst
 }
 
 // wait blocks for the waiter's result, the timeout or ctx. On timeout the entry is

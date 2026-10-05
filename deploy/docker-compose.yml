@@ -11,10 +11,8 @@
 
 services:
   pathwatch:
-    # "latest" follows the main branch; "edge" is the newest test build;
-    # semver tags (e.g. :1.0.0) are published for releases.
-    # (Before the first merge to main only "edge" exists; use it if "latest"
-    # reports "manifest unknown".)
+    # "latest" and "edge" both follow the main branch (branch and PR builds
+    # are never published); semver tags (e.g. :1.0.0) are published for releases.
     image: ghcr.io/i-press-buttons/pathwatch:latest
     container_name: pathwatch
 
@@ -24,9 +22,27 @@ services:
     # there is no "ports:" section.
     network_mode: host
 
-    # Raw ICMP sockets for hop-by-hop tracing.
+    # Hardened profile. The container still runs as root (needed for raw ICMP
+    # on Synology kernels), but only keeps the one capability pathwatch uses
+    # (NET_RAW, for hop-by-hop tracing), cannot gain privileges, and has a
+    # read-only root filesystem. Everything pathwatch writes lives in /data.
+    cap_drop:
+      - ALL
     cap_add:
       - NET_RAW
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp   # scratch space only (SQLite temp files); /data is the only persistent path
+    # Notes:
+    # - Without DAC_OVERRIDE, root can only write to ./data if that folder is
+    #   owned by root or is world-writable. A folder owned by another user
+    #   (typical on Synology) fails at startup with "permission denied". Fix
+    #   it with "sudo chown root:root ./data", or add DAC_OVERRIDE under
+    #   cap_add.
+    # - A log.file path outside /data cannot be opened under read_only;
+    #   pathwatch then logs to stderr only (see docs/SPEC.md).
 
     restart: unless-stopped
 

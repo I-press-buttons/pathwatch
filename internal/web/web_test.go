@@ -1133,3 +1133,81 @@ func TestCSRFChecks(t *testing.T) {
 		}
 	}
 }
+
+// TestHostCheckWhenAuthIsOff covers DNS rebinding: with auth off, a request addressed to a
+// foreign name is refused before any handler runs, however convincing its Origin looks.
+func TestHostCheckWhenAuthIsOff(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	f.srv.d.Config.PublicURL = "https://pathwatch.nas.example:8443/"
+	port := f.ts.URL[strings.LastIndex(f.ts.URL, ":")+1:]
+	do := func(method, path, host string, hdr map[string]string) int {
+		t.Helper()
+		var body io.Reader
+		switch {
+		case path == "/api/targets":
+			body = strings.NewReader(`{"name":"x","host":"10.0.0.1"}`)
+		case method == "POST":
+			body = strings.NewReader(`{"duration_ms":60000}`)
+		}
+		req, _ := http.NewRequest(method, f.ts.URL+path, body)
+		req.Host = host
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range hdr {
+			req.Header.Set(k, v)
+		}
+		resp, err := f.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	for _, host := range []string{"rebind.example:" + port, "rebind.example", "127.0.0.1.evil.example:" + port, "localhost.evil.example", "192.168.1.5:" + port, "[2001:db8::1]:" + port, "pathwatch.nas.example.evil.test"} {
+		for _, sf := range []string{"same-origin", ""} {
+			hdr := map[string]string{"Origin": "http://" + host, "X-Forwarded-Host": host}
+			if sf != "" {
+				hdr["Sec-Fetch-Site"] = sf
+			}
+			for _, c := range []struct{ method, path string }{
+				{"GET", "/api/status"}, {"GET", "/"}, {"GET", "/api/stream"}, {"GET", "/healthz"},
+				{"POST", "/api/targets"}, {"POST", "/api/silences"},
+			} {
+				if got := do(c.method, c.path, host, hdr); got != http.StatusMisdirectedRequest {
+					t.Errorf("%s %s Host %q Sec-Fetch-Site %q: %d, want 421", c.method, c.path, host, sf, got)
+				}
+			}
+		}
+	}
+
+	for _, host := range []string{
+		"localhost:" + port, "localhost", "LOCALHOST:" + port, "localhost.:" + port, "127.0.0.1:" + port, "127.0.0.1",
+		"127.1.2.3:" + port, "[::1]:" + port, "[::1]", "pathwatch.nas.example:8443", "PathWatch.NAS.example",
+	} {
+		if got := do("GET", "/api/status", host, nil); got != 200 {
+			t.Errorf("Host %q: %d, want 200", host, got)
+		}
+		if got := do("POST", "/api/silences", host, map[string]string{"Origin": "http://" + host, "Sec-Fetch-Site": "same-origin"}); got != 201 {
+			t.Errorf("POST Host %q: %d, want 201", host, got)
+		}
+	}
+
+	// X-Forwarded-Host never rescues a foreign Host.
+	if got := do("GET", "/api/status", "rebind.example", map[string]string{"X-Forwarded-Host": "localhost"}); got != 421 {
+		t.Errorf("X-Forwarded-Host trusted: %d", got)
+	}
+
+	// With auth on the check is off: LAN access by IP or NAS name keeps working.
+	fa := newFixture(t, fixtureOpts{auth: true})
+	req, _ := http.NewRequest("GET", fa.ts.URL+"/api/status", nil)
+	req.Host = "nas.lan:8095"
+	req.SetBasicAuth(fa.user, fa.pass)
+	resp, err := fa.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("auth on, LAN host: %d, want 200", resp.StatusCode)
+	}
+}

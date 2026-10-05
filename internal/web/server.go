@@ -56,6 +56,7 @@ type Server struct {
 	userSum [32]byte
 	passSum [32]byte
 	files   http.Handler
+	limiter *authLimiter
 }
 
 // New builds the server.
@@ -69,7 +70,7 @@ func New(d Deps) *Server {
 	if d.Hub == nil {
 		d.Hub = NewHub()
 	}
-	s := &Server{d: d, log: d.Logger, hub: d.Hub, mux: http.NewServeMux(), now: d.Now, started: d.Now()}
+	s := &Server{d: d, log: d.Logger, hub: d.Hub, mux: http.NewServeMux(), now: d.Now, started: d.Now(), limiter: newAuthLimiter()}
 	if d.Config != nil {
 		s.maint = alert.MaintenanceWindows(d.Config.Alerts.MaintenanceWindows)
 	}
@@ -133,14 +134,17 @@ func (s *Server) routes() {
 	m.HandleFunc("/", s.handleUI)
 }
 
-// Handler returns the full handler chain (recover, JSON errors, logging, CSRF check, auth).
+// Handler returns the full handler chain (security headers, recover, JSON errors, logging, Host
+// check, CSRF check, auth).
 func (s *Server) Handler() http.Handler {
 	var h http.Handler = s.mux
 	h = s.auth(h)
 	h = s.sameOrigin(h)
+	h = s.hostCheck(h)
 	h = s.accessLog(h)
 	h = jsonErrors(h)
 	h = s.recoverer(h)
+	h = s.securityHeaders(h)
 	return h
 }
 
@@ -301,7 +305,8 @@ func (s *Server) originAllowed(r *http.Request) bool {
 	return false
 }
 
-// auth enforces HTTP Basic auth (constant-time comparison) on everything except /healthz.
+// auth enforces HTTP Basic auth (constant-time comparison) on everything except /healthz. Clients
+// that keep sending wrong credentials are backed off per address (see authLimiter).
 func (s *Server) auth(next http.Handler) http.Handler {
 	if !s.d.Auth.Enabled {
 		return next
@@ -311,14 +316,25 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		u, p, ok := r.BasicAuth()
-		if ok && s.checkCreds(u, p) {
-			next.ServeHTTP(w, r)
+		challenge := func() {
+			w.Header().Set("WWW-Authenticate", `Basic realm="pathwatch", charset="UTF-8"`)
+			writeError(w, http.StatusUnauthorized, "authentication required")
+		}
+		if r.Header.Get("Authorization") == "" {
+			challenge() // e.g. a browser's first request before the login prompt: not a guess
 			return
 		}
-		time.Sleep(250 * time.Millisecond) // cheap brute-force throttle
-		w.Header().Set("WWW-Authenticate", `Basic realm="pathwatch", charset="UTF-8"`)
-		writeError(w, http.StatusUnauthorized, "authentication required")
+		u, p, _ := r.BasicAuth()
+		good, retry := s.limiter.attempt(s.now(), r.RemoteAddr, u, s.log, func() bool { return s.checkCreds(u, p) })
+		switch {
+		case good:
+			next.ServeHTTP(w, r)
+		case retry > 0:
+			w.Header().Set("Retry-After", retryAfterSeconds(retry))
+			writeError(w, http.StatusTooManyRequests, "too many failed authentication attempts")
+		default:
+			challenge()
+		}
 	})
 }
 

@@ -83,6 +83,13 @@ func HTTPProbe(ctx context.Context, p config.Probe, o HTTPOptions) HTTPResult {
 				return errors.New("stopped after 10 redirects")
 			}
 			res.Redirects = len(via)
+			// net/http copies custom headers to every hop; do not hand the configured ones
+			// (API keys, tokens) to another origin.
+			if o := via[0].URL; req.URL.Scheme != o.Scheme || req.URL.Host != o.Host || req.URL.Port() != o.Port() {
+				for k := range p.Headers {
+					req.Header.Del(k)
+				}
+			}
 			return nil
 		},
 	}
@@ -126,6 +133,7 @@ func HTTPProbe(ctx context.Context, p config.Probe, o HTTPOptions) HTTPResult {
 	}
 	req.Header.Set("User-Agent", ua)
 	for k, v := range p.Headers {
+		v = config.ExpandProbeHeader(v, nil)
 		if http.CanonicalHeaderKey(k) == "Host" {
 			req.Host = v
 			continue

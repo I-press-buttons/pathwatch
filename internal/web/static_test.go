@@ -42,7 +42,7 @@ func staticServer(t *testing.T, fsys fs.FS) http.Handler {
 
 // staticDo serves one request in-process; hdr is a flat list of name, value pairs.
 func staticDo(h http.Handler, method, target string, hdr ...string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest(method, target, nil)
+	r := loopbackReq(method, target)
 	for i := 0; i+1 < len(hdr); i += 2 {
 		r.Header.Add(hdr[i], hdr[i+1])
 	}

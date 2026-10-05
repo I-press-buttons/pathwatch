@@ -393,3 +393,4 @@ dialog .actions.sticky { position: sticky; bottom: 0; background: var(--surface)
 .add-row .field { flex: 0 1 220px; margin-bottom: 0; }
 .form-error { white-space: pre-line; }
 .form-error ul { margin: 0; padding-left: 18px; white-space: normal; }
+.noscript-note { padding: 16px; }

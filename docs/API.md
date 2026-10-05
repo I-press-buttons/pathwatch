@@ -1,6 +1,9 @@
 # pathwatch HTTP API (internal, used by the embedded UI)
 
 All endpoints except `/healthz` require Basic auth when auth is enabled.
+Responses to failed requests: `421` when auth is off and the `Host` header is not a loopback name or IP
+or the `public_url` host (DNS-rebinding protection); `429` with `Retry-After` when a client address has
+sent too many wrong credentials (nothing is evaluated until the delay has passed).
 JSON everywhere. **Timestamps in the API are Unix milliseconds (UTC).** Durations/latencies are
 **milliseconds as floats** (3 decimals is plenty). Missing values are `null`.
 

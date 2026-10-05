@@ -49,7 +49,30 @@ func checkConfigCmd(args []string) int {
 	if !config.IsLoopbackListen(cfg.Listen) && os.Getenv(config.EnvPassword) == "" {
 		fmt.Println("  note: listening beyond loopback without PATHWATCH_PASSWORD; a password is generated on first start")
 	}
+	// Resolving auth here would create the password file, so look at the user-set password only.
+	if pw := userPassword(cfg); pw != "" && weakPassword(pw) {
+		fmt.Printf("  warning: %s\n", weakPasswordMsg)
+	}
 	return 0
+}
+
+// minPasswordLen is the length below which a user-chosen password draws a warning.
+const minPasswordLen = 12
+
+const weakPasswordMsg = "the web UI password is shorter than 12 characters; use a longer one, or unset PATHWATCH_PASSWORD on a non-loopback listen address to get a generated one"
+
+func weakPassword(pw string) bool { return len(pw) < minPasswordLen }
+
+// userPassword is the password the operator set through the environment (not a generated one).
+func userPassword(cfg *config.Config) string {
+	name := cfg.Auth.BasicPasswordEnv
+	if name == "" {
+		name = config.EnvPassword
+	}
+	if pw := os.Getenv(name); pw != "" {
+		return pw
+	}
+	return os.Getenv(config.EnvPassword)
 }
 
 func authSummary(cfg *config.Config) string {

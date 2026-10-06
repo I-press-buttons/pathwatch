@@ -438,13 +438,6 @@ func (r *runner) round(ctx context.Context, st *icmpState) {
 		return
 	}
 	dst := pn.Addr
-	if !dst.Is4() {
-		if time.Since(st.lastWarn) > time.Hour {
-			st.lastWarn = time.Now()
-			r.s.log.Warn("ICMP trace supports IPv4 only; skipping rounds for this target", r.log("addr", dst)...)
-		}
-		return
-	}
 	if r.rediscover.Swap(false) {
 		st.limiter.Rediscover()
 	}

@@ -57,6 +57,7 @@ type Config struct {
 	Storage StorageConfig `yaml:"storage"`
 	Probing ProbingConfig `yaml:"probing"`
 	Enrich  EnrichConfig  `yaml:"enrich"`
+	Metrics MetricsConfig `yaml:"metrics"`
 
 	Defaults  Defaults         `yaml:"defaults"`
 	Status    StatusConfig     `yaml:"status"`
@@ -113,6 +114,12 @@ type ProbingConfig struct {
 type EnrichConfig struct {
 	ReverseDNS *bool  `yaml:"reverse_dns"`
 	ASNDB      string `yaml:"asn_db"`
+}
+
+// MetricsConfig controls the Prometheus /metrics endpoint. It is off by default; when on it is
+// served behind the same Basic auth and Host check as the API.
+type MetricsConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 // Defaults are inherited by every target and probe. In JSON (the web API) durations are

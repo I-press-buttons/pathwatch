@@ -43,6 +43,9 @@ enrich:
   reverse_dns: true
   # asn_db: GeoLite2-ASN.mmdb             # optional, user-supplied MaxMind database
 
+# metrics:                                # Prometheus endpoint GET /metrics (off by default)
+#   enabled: false                        # same Basic auth as the API; see the README for a scrape_config
+
 defaults:                                 # inherited by every target/probe
   icmp_interval: 2s
   icmp_timeout: 2s
@@ -57,7 +60,7 @@ defaults:                                 # inherited by every target/probe
   retries: 0                              # retry failed HTTP/TCP/DNS probes (0-10); ICMP never retries
 
 # Targets: host is a hostname (FQDN such as example.com), an IPv4 or an IPv6 address.
-# Hop tracing is IPv4-only for now; HTTP and TCP probes work over IPv6 too.
+# Hop tracing, HTTP and TCP probes all work over IPv6 too (a hostname prefers its IPv4 address).
 
 status:                                   # when a target shows as "degraded"
   degraded_loss_pct: 5                    # end-to-end loss above this (last 5 minutes)

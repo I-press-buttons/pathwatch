@@ -25,7 +25,6 @@ Project name: `pathwatch`.
 - A native desktop GUI.
 - Packet capture or deep packet inspection.
 - Editing secrets, notification channels, maintenance windows or server settings (listen, TLS, storage) from the UI. Targets, probe settings, alert thresholds and DNS probes are editable, see [Settings edited in the UI](#settings-edited-in-the-ui).
-- Data export / ISP report generation and a Prometheus `/metrics` endpoint (possible later, not planned).
 
 ## Key design decisions
 
@@ -39,7 +38,7 @@ Project name: `pathwatch`.
 | Default bind | `127.0.0.1` (binary); `0.0.0.0` in the Docker image | Safe default; remote access requires auth |
 | Remote access | HTTP Basic auth (mandatory when not loopback) plus optional built-in TLS | Works standalone on a LAN and behind a reverse proxy |
 | Hop probing | mtr-style: TTL-limited probes toward the destination, every round | Measures the path real traffic takes; detects path changes continuously |
-| IP family | IPv4 implemented first; all types, schema, and interfaces are family-agnostic | IPv6 can be added without redesign |
+| IP family | IPv4 and IPv6 both traced (ICMPv6 prober on Linux; `Icmp6SendEcho2` on Windows); a hostname pins its IPv4 address when it has one | Types, schema and interfaces are family-agnostic |
 | License | MIT | Short, permissive, common for Go tools |
 
 ### Dependencies
@@ -150,9 +149,10 @@ Define a small `Prober` interface: send a probe with a given TTL to a destinatio
   2. Raw ICMP sockets, which require root or `CAP_NET_RAW` (`setcap cap_net_raw+ep`, `cap_add: [NET_RAW]` in Docker, or `AmbientCapabilities=CAP_NET_RAW` in systemd). Older NAS kernels (e.g. Synology DSM) commonly need this mode.
   A config option `icmp_mode: auto|dgram|raw` overrides detection.
 - **Windows:** `IcmpSendEcho2` via `golang.org/x/sys/windows`. Allows setting TTL and returns the responding hop address without admin rights. Each in-flight probe runs in its own goroutine (the call blocks until reply or timeout).
+- **IPv6:** the Linux prober is a family dispatcher over an IPv4 and an ICMPv6 prober, opened with the same `icmp_mode`; if IPv6 sockets are unavailable, IPv6 targets report a per-probe error and IPv4 is unaffected. The ICMPv6 prober builds Echo Requests (128) and parses Echo Reply (129), Time Exceeded (3) and Destination Unreachable (1) with bounds-checked parsing of the quoted IPv6+ICMPv6 header; the hop limit is set per probe with `IPV6_UNICAST_HOPS`, and since raw ICMPv6 sockets do not deliver the IPv6 header the responder is the `recvfrom` source. As for IPv4, only an Echo Reply from the probed destination is accepted. The kernel computes the ICMPv6 checksum over a pseudo-header containing the source address, so Paris flow identity (constant checksum) is kept by compensating with the local source address the kernel will choose (found by connecting a UDP socket to the destination, cached per destination for 10 minutes). If the route (and so the source address) changes between refreshes, the flow checksum may briefly differ from the intended constant; probing is unaffected. In datagram mode the kernel rewrites the identifier to the socket port and one socket per flow is used, as for IPv4. The Windows prober uses `Icmp6SendEcho2` (identifier, sequence and checksum chosen by the OS, so flow identity is best effort). Note that the datagram-mode error-queue handling and the Windows IPv6 path have not been exercised on real hosts.
 - The HTTP, TCP connect, and DNS probers are pure stdlib and identical on every platform.
 
-Later options: UDP and TCP-SYN traceroute modes for destinations or middleboxes that drop ICMP, and the IPv6 prober (ICMPv6 / `Icmp6SendEcho2`). The interface is designed so these slot in.
+Later options: UDP and TCP-SYN traceroute modes for destinations or middleboxes that drop ICMP. The interface is designed so these slot in.
 
 Use high-resolution timing: measure RTT with the monotonic clock (`time.Now()` / `time.Since`) around send/receive, and use kernel receive timestamps (`SO_TIMESTAMPNS`) on Linux where available. On Windows, be aware of timer resolution limits.
 
@@ -273,6 +273,13 @@ Keep the visual style flat and clean, with dark mode support via `prefers-color-
 
 All times are stored in UTC and displayed in the browser's local timezone.
 
+### Export and ISP report
+
+The target page has **Export CSV**, **Export JSON** and **Report** controls that use the time range on screen (a Hops/Probes selector chooses what is exported).
+
+- **Export** (`GET /api/targets/{id}/export`): rollup rows as a file download. Hops: per bucket and TTL, the hop address, hostname and ASN where known, probes sent and lost, loss %, and RTT min/avg/max/jitter/p95. Probes: per HTTP/TCP probe and bucket, the phase averages, total min/avg/max/p95 and the error count. The resolution follows the range like the history endpoints (1-minute buckets up to 7 days, 1-hour beyond; `res=1m|1h` overrides). The range is bounded and a request that would exceed 250,000 rows is refused with 400. The file is streamed. Text cells that a spreadsheet could read as a formula (leading `=`, `+`, `-`, `@`, tab or CR) get a leading single quote in CSV, because reverse-DNS hostnames are attacker-influenced. The control is a plain same-origin link, so it needs no script and works under the CSP. The hop identity is that of the path version current at the end of the range.
+- **Report** (`GET /api/targets/{id}/report`, page `#/target/{id}/report?from=&to=`): a page meant to be printed or saved as PDF to hand to an ISP. It shows the summary (destination availability and loss, latency average and p95, jitter, MOS, HTTP/TCP success), the incidents of the range (alerts and degradation events with start, duration, kind and severity), for each incident the first hop where loss or latency degradation starts (found with the same classifier as the live analysis, with address, hostname and AS) and the HTTP/TCP probe impact during it, monitor gaps (shown as "no data", never as loss) and path changes. `@media print` hides the navigation and controls and forces light colours.
+
 **JSON API** (internal, used by the UI): targets and status, current path, time-bucketed samples for a range (the server picks the tier), events, alerts, silences (create/end), plus an SSE endpoint that pushes each completed round and probe result for live updates.
 
 ## Access and security
@@ -284,6 +291,7 @@ All times are stored in UTC and displayed in the browser's local timezone.
 - **DNS-rebinding protection.** While authentication is off, requests whose `Host` header is not `localhost`, an address in `127.0.0.0/8`, `::1`, or the host of `public_url` are rejected with `421 Misdirected Request`. `X-Forwarded-Host` is deliberately not trusted for this check. A local reverse proxy in front of an auth-less loopback instance therefore needs its public hostname in `public_url` (or, better, a password, which turns authentication on and this check off).
 - **Security headers.** Every response carries `Content-Security-Policy` (with `frame-ancestors 'none'`), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`, so the UI cannot be framed. `Strict-Transport-Security` is added only when built-in TLS is enabled.
 - **CSRF model.** The API is same-origin only. Every request with a method other than GET, HEAD or OPTIONS passes the `sameOrigin` check: it is accepted when `Sec-Fetch-Site` is `same-origin` or `none` and refused when it is `cross-site` or `same-site`. When the header is absent (older browsers) the `Origin` header, if present, must match `Host`, the first `X-Forwarded-Host` value, or the host of `public_url`; requests without an `Origin` (curl, scripts) pass. Endpoints that take a body (targets, settings, silences) also require `Content-Type: application/json`, which blocks simple cross-site form posts; body-less ones (DELETE, pause/resume) rely on `sameOrigin` alone. Reverse-proxy users should set `public_url` and forward `X-Forwarded-Host`, since both feed this check.
+- **Prometheus `/metrics`.** Opt-in (`metrics.enabled`, default false; 404 when off). It is an ordinary route behind the same middleware as `/api/*`: Basic auth (only `/healthz` is exempt), the Host/DNS-rebinding check, security headers and the failed-login limiter. Details in [docs/API.md](API.md#prometheus-metrics).
 - Passwords are compared in constant time.
 - `public_url` (for example `https://nas.local:8080`) builds deep links in alerts. Without it, alerts omit the link.
 - Never log secrets.
@@ -375,6 +383,9 @@ log:
   level: info                         # debug | info | warn | error
   format: text                        # text | json
   file: ""                            # optional; rotated by size
+
+metrics:
+  enabled: false                      # Prometheus GET /metrics, behind the same auth as the API
 
 storage:
   path: ./pathwatch.db                # must be on a local filesystem
@@ -561,7 +572,7 @@ Storage and precedence: UI edits are stored in the database (`settings` table an
 
 **Limits.** At most 200 targets (config-file and UI-created together), 16 probes per target and 50 DNS probes. They apply to the config file (more is a validation error) and to the API (400 with the message), so a client with write access cannot make the instance run an unbounded number of probes. The 200-target total is checked when a target is created; a database that already holds more (from an older version) still starts, keeps its targets and only refuses new ones. A stored UI target over the probe cap is logged and not run until it is edited down; stored DNS probe lists over the cap fall back to the file's, as for any other stored setting that no longer fits.
 
-**Hosts.** A target host is a hostname (fully qualified, with or without a trailing dot, or a short name completed by the system resolver), an IPv4 address or an IPv6 address (brackets accepted). Hosts are normalized; URLs and `host:port` are rejected with a message that says what to change. The UI shows what kind of host was entered and can resolve it before saving. Hostnames are re-resolved every `path_rediscovery` and the IPv4 address is preferred. Hop tracing is IPv4-only (see Later); HTTP and TCP probes work over IPv6.
+**Hosts.** A target host is a hostname (fully qualified, with or without a trailing dot, or a short name completed by the system resolver), an IPv4 address or an IPv6 address (brackets accepted). Hosts are normalized; URLs and `host:port` are rejected with a message that says what to change. The UI shows what kind of host was entered and can resolve it before saving. Hostnames are re-resolved every `path_rediscovery` and the IPv4 address is preferred. Hop tracing, HTTP and TCP probes all work over IPv6.
 
 **Retries.** `retries` (0–10, default 0) applies to HTTP, TCP and DNS probes: a failed attempt is retried after 250 ms, as long as another attempt can finish before the probe is next due, and only the final outcome is recorded (a failure notes the number of attempts). Retries trade sensitivity for fewer one-off failures; the consecutive-failure alert rules are the other knob. ICMP hop probes never retry: an unanswered probe is the loss being measured.
 
@@ -594,7 +605,8 @@ mtr and WinMTR (live per-hop, no history), Trippy (Rust TUI traceroute), Smokepi
 5. **Web UI:** overview page, target page (summary cards, canvas path timeline, HTTP phases chart), ranges 1h to 90d plus custom, drag-to-zoom, SSE live updates, Basic auth, optional TLS.
 6. **Alerting:** hop classifier, local-outage detection, rule engine with baselines (cold start, freeze, `min_delta`), hysteresis and cooldown, persistent outbox with retry, webhook presets and email, silences and maintenance windows, heartbeat, alerts feed in the UI.
 7. **Packaging and Windows:** Windows prober (`IcmpSendEcho2`) tested on Windows 10/11, native Windows service, systemd unit, GoReleaser binaries, README with screenshots.
-8. **Later:** IPv6 prober, UDP and TCP-SYN trace modes, ASN and rDNS enrichment polish, full config hot reload, possibly export/ISP report and Prometheus metrics.
+8. **IPv6 hop tracing:** ICMPv6 prober (Linux raw and datagram, Windows `Icmp6SendEcho2`), see Platform layer.
+9. **Later:** UDP and TCP-SYN trace modes, ASN and rDNS enrichment polish, full config hot reload. (Prometheus `/metrics`, data export and the ISP report are implemented.)
 
 ## Instructions for the coding agent
 
@@ -625,6 +637,6 @@ Decisions made:
 - Primary deployment: **Docker on NAS/server**. The Docker milestone moved to 4, the Windows prober moved to 7, and armv7 builds were added.
 - IPv4 first with a family-agnostic design; IPv6 prober later.
 - Added scope: overview page, 30d/90d/custom ranges with drag-to-zoom, TLS cert-expiry rule, DNS resolver probe, silences and maintenance windows, optional heartbeat.
-- Not planned: export/ISP report, Prometheus metrics.
+- Later additions: an opt-in Prometheus `/metrics` endpoint (issue #21) and data export (CSV/JSON) with a printable ISP report (issue #22), see [Export and ISP report](#export-and-isp-report).
 - Remote access: Basic auth required off loopback, optional built-in TLS; no unauthenticated mode.
 - License: MIT.

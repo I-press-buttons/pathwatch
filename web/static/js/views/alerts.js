@@ -1,7 +1,8 @@
 // Alerts page: feed, silences (create/end), maintenance windows (read-only).
 import { h, clear, isNum, fmtMs, fmtDateTime, fmtDuration, fmtAgo, DASH } from '../util.js';
 import { api, serverNow } from '../api.js';
-import { alertPill, deliveryPill, panel, confirmDialog } from '../ui.js';
+import { alertPill, deliveryPill, panel, confirmDialog, incidentHref } from '../ui.js';
+import { openSilenceDialog } from './silence-dialog.js';
 
 function fmtVal(ruleType, v) {
   if (!isNum(v)) return DASH;
@@ -41,19 +42,26 @@ export function mount(root, ctx) {
     const rows = list.map((a) => {
       const ongoing = a.state === 'firing' || a.ended_at == null;
       const dur = (ongoing ? now : a.ended_at) - a.started_at;
+      const href = incidentHref(a, now);
+      const tgt = a.target_id == null ? h('span', null, 'all targets') : h('a', { href: '#/target/' + a.target_id }, a.target_name || tname(a.target_id));
+      const actions = h('td', { class: 'right nowrap' },
+        href ? h('a', { class: 'btn sm', href, title: 'Open the target page at the time of this alert' }, 'View') : null,
+        ongoing && a.target_id != null ? h('button', { class: 'btn sm', type: 'button', title: 'Hold back notifications for this target and rule',
+          onclick: () => openSilenceDialog({ targetId: a.target_id, targetName: a.target_name || tname(a.target_id), rule: a.rule, onDone: () => loadSilences() }) }, 'Silence') : null);
       return h('tr', null,
         h('td', { 'data-label': 'State' }, alertPill(a)),
-        h('td', { 'data-label': 'Alert' }, h('div', null, h('strong', null, a.rule), ' ', h('span', { class: 'muted' }, '· ', h('a', { href: '#/target/' + a.target_id }, a.target_name || tname(a.target_id)))),
+        h('td', { 'data-label': 'Alert' }, h('div', null, h('strong', null, href ? h('a', { href, title: 'Show this alert on the target page' }, a.rule) : a.rule), ' ', h('span', { class: 'muted' }, '· ', tgt)),
           a.message ? h('div', { class: 'alert-msg' }, a.message) : null),
         h('td', { 'data-label': 'Started', title: fmtDateTime(a.started_at) }, fmtDateTime(a.started_at), h('div', { class: 'muted' }, fmtAgo(a.started_at, now))),
         h('td', { 'data-label': 'Duration' }, ongoing ? h('span', null, fmtDuration(dur), h('div', { class: 'muted' }, 'ongoing')) : fmtDuration(dur)),
         h('td', { class: 'cmp', 'data-label': 'Value' },
           h('div', null, fmtVal(a.rule_type, a.value), isNum(a.peak_value) && a.peak_value !== a.value ? h('span', { class: 'muted' }, ' (peak ' + fmtVal(a.rule_type, a.peak_value) + ')') : null),
           isNum(a.baseline) ? h('div', { class: 'base' }, 'baseline ' + fmtVal(a.rule_type, a.baseline)) : null),
-        h('td', { 'data-label': 'Delivery' }, (a.deliveries && a.deliveries.length) ? h('div', { class: 'deliv' }, a.deliveries.map(deliveryPill)) : h('span', { class: 'muted' }, a.state === 'suppressed' ? 'not sent' : DASH)));
+        h('td', { 'data-label': 'Delivery' }, (a.deliveries && a.deliveries.length) ? h('div', { class: 'deliv' }, a.deliveries.map(deliveryPill)) : h('span', { class: 'muted' }, a.state === 'suppressed' ? 'not sent' : DASH)),
+        actions);
     });
     const table = h('div', { class: 'table-scroll' }, h('table', { class: 'list-table stack' },
-      h('thead', null, h('tr', null, ['State', 'Alert', 'Started', 'Duration', 'Value', 'Delivery'].map((c) => h('th', null, c)))),
+      h('thead', null, h('tr', null, ['State', 'Alert', 'Started', 'Duration', 'Value', 'Delivery', ''].map((c) => h('th', null, c)))),
       h('tbody', null, rows)));
     clear(feed.content).append(table);
     feed.showContent();

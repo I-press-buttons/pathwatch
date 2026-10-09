@@ -49,9 +49,10 @@ type Sender struct {
 	now  func() time.Time
 	sink AlertSink
 
-	mu       sync.RWMutex
-	channels map[string]channelSender
-	maxAge   time.Duration
+	mu        sync.RWMutex
+	channels  map[string]channelSender
+	maxAge    time.Duration
+	publicURL string // for the link in test notifications
 
 	wake    chan struct{}
 	stop    chan struct{}
@@ -88,6 +89,9 @@ func (s *Sender) Configure(cfg *config.Config) {
 		ch[ChannelEmail] = NewEmailSender(*e, nil, s.now)
 	}
 	s.setChannels(ch, cfg.Alerts.Outbox.MaxAge.D())
+	s.mu.Lock()
+	s.publicURL = cfg.PublicURL
+	s.mu.Unlock()
 }
 
 func (s *Sender) setChannels(ch map[string]channelSender, maxAge time.Duration) {

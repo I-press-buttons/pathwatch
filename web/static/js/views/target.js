@@ -1,12 +1,13 @@
 // Target page: summary cards, hop grid, path timeline heatmap, hop latency graph, HTTP phases, recent alerts.
 // All time-based panels share one time axis ({from,to} in ms) and refetch together on range/zoom changes.
-import { h, clear, isNum, fmtMs, fmtPct, fmtMos, fmtInt, fmtDateTime, fmtDuration, fmtAgo, fmtTime, clamp, lsGet, lsSet, toLocalInput, fromLocalInput, DASH, percentile } from '../util.js';
+import { h, clear, isNum, fmtMs, fmtPct, fmtMos, fmtInt, fmtDateTime, fmtDuration, fmtAgo, fmtTime, fmtHM, clamp, lsGet, lsSet, toLocalInput, fromLocalInput, DASH, percentile } from '../util.js';
 import { api, serverNow, onStream, onStreamState, getStreamState } from '../api.js';
-import { statusPill, panel, alertPill, deliveryPill, metricClass } from '../ui.js';
+import { statusPill, panel, alertPill, deliveryPill, metricClass, confirmDialog, incidentHref, INCIDENT_PAD_MS, WHERE, diagStartsAtHop } from '../ui.js';
 import { Heatmap } from '../charts/heatmap.js';
 import { LatencyChart } from '../charts/latency.js';
 import { PhasesChart } from '../charts/phases.js';
 import { openTargetEditor } from './target-editor.js';
+import { openSilenceDialog } from './silence-dialog.js';
 
 export const RANGES = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3, '90d': 90 * 86400e3 };
 const REFRESH_MS = 7000;        // live cadence of the summary cards (and the floor for the range panels)
@@ -17,8 +18,8 @@ export function mount(root, ctx) {
   const id = Number(ctx.params.id);
   const S = { rangeKey: '1h', custom: null, zoom: null, ttl: null, live: true, scale: 'auto', httpProbe: null };
   const axis = { from: 0, to: 1 };
-  const D = { target: null, targets: [], hops: null, timeline: null, series: null, probes: null, alerts: null };
-  const seq = { targets: 0, hops: 0, timeline: 0, series: 0, probes: 0, alerts: 0 };
+  const D = { target: null, targets: [], hops: null, timeline: null, series: null, probes: null, alerts: null, silences: null };
+  const seq = { targets: 0, hops: 0, timeline: 0, series: 0, probes: 0, alerts: 0, silences: 0 };
   let destroyed = false;
   const cleanups = [];
   // In-flight requests, one controller per load: a newer load of the same kind (or abortAll) cancels the older one.
@@ -33,7 +34,10 @@ export function mount(root, ctx) {
   const statusEl = h('span');
   const editBtn = h('button', { class: 'btn sm', type: 'button', hidden: true, title: 'Host, probes, intervals, timeouts, retries and alert thresholds',
     onclick: () => openTargetEditor({ id, onSaved: () => refreshAll() }) }, 'Edit target');
-  const head = h('div', { class: 'target-head' }, h('a', { class: 'btn sm', href: '#/' }, '← Overview'), targetSel, title, statusEl, hostLine, editBtn);
+  const silenceBtn = h('button', { class: 'btn sm', type: 'button', hidden: true, title: 'Hold back alert notifications for this target for a while',
+    onclick: () => openSilenceDialog({ targetId: id, targetName: D.target ? D.target.name : null, onDone: () => { loadSilences(); loadTargets(); } }) }, 'Silence');
+  const silenceEl = h('span', { class: 'silence-note' });
+  const head = h('div', { class: 'target-head' }, h('a', { class: 'btn sm', href: '#/' }, '← Overview'), targetSel, title, statusEl, silenceEl, hostLine, editBtn, silenceBtn);
 
   const rangeBtns = Object.keys(RANGES).map((k) => h('button', { type: 'button', class: 'btn sm', dataset: { range: k }, onclick: () => setRange(k) }, k));
   const customBtn = h('button', { type: 'button', class: 'btn sm', dataset: { range: 'custom' }, onclick: () => toggleCustom() }, 'Custom');
@@ -50,6 +54,7 @@ export function mount(root, ctx) {
     customBox, resetBtn, zoomNote, h('div', { style: { flex: 1 } }), liveEl);
 
   // ================= panels =================
+  const diagEl = h('section', { class: 'diag', hidden: true, 'aria-live': 'polite' });
   const cardsEl = h('div', { class: 'cards' });
   const hopsP = panel('Hops', { flush: true, actions: h('span', { class: 'muted', style: { fontSize: '12.5px' } }, 'Click a row to graph that hop') });
   const hopNote = h('div', { class: 'note', hidden: true });
@@ -72,7 +77,7 @@ export function mount(root, ctx) {
   const heatP = panel('Path timeline', { actions: heatLegend });
   const heatHost = h('div');
   clear(heatP.content).append(heatHost);
-  const heat = new Heatmap(heatHost, { onSelectTtl: (ttl, isDest) => selectTtl(ttl, isDest), onZoom: (a, b) => zoomTo(a, b) });
+  const heat = new Heatmap(heatHost, { onSelectTtl: (ttl, isDest) => selectTtl(ttl, isDest), onZoom: (a, b) => zoomTo(a, b), onEvent: (ev) => zoomToEvent(ev) });
 
   const latP = panel('Latency & loss');
   const latSub = h('div', { class: 'chart-title' });
@@ -92,7 +97,7 @@ export function mount(root, ctx) {
 
   const alertsP = panel('Recent alerts', { flush: true, actions: h('a', { href: '#/alerts', style: { fontSize: '12.5px' } }, 'All alerts →') });
 
-  root.append(head, rangeBar, cardsEl, hopsP.el, heatP.el, latP.el, phasesP.el, alertsP.el);
+  root.append(head, rangeBar, diagEl, cardsEl, hopsP.el, heatP.el, latP.el, phasesP.el, alertsP.el);
   hopsP.showLoading('Loading hops…'); heatP.showLoading('Loading path timeline…'); latP.showLoading(); phasesP.showLoading(); alertsP.showLoading();
   renderCards();
 
@@ -128,6 +133,14 @@ export function mount(root, ctx) {
   function setRange(k) { push(() => { S.rangeKey = k; S.custom = null; S.zoom = null; lsSet('pathwatch.range', k); }); }
   function zoomTo(a, b) { push(() => { S.zoom = [Math.round(a), Math.round(b)]; }); }
   function resetZoom() { push(() => { S.zoom = null; }); }
+  /** clicking an alert marker on the timeline zooms to the alert with some context on both sides */
+  function zoomToEvent(ev) {
+    if (!ev || ev.kind !== 'alert' || !isNum(ev.from)) return;
+    const now = serverNow();
+    const a = ev.from - INCIDENT_PAD_MS;
+    const b = Math.min(now, (isNum(ev.to) ? ev.to : now) + INCIDENT_PAD_MS);
+    zoomTo(a, Math.max(b, a + 60000));
+  }
   function selectTtl(ttl, isDest) {
     push(() => { S.ttl = isDest || ttl === S.ttl ? null : ttl; }, true);
   }
@@ -200,7 +213,7 @@ export function mount(root, ctx) {
       if (my !== seq.targets || destroyed) return;
       D.targets = list || [];
       D.target = D.targets.find((t) => t.id === id) || null;
-      renderHeader(); renderCards(); renderHopNote();
+      renderHeader(); renderDiagnosis(); renderCards(); renderHopNote(); markProblemHop();
       if (!D.target) { hopsP.showEmpty('Target not found.', 'It may have been deleted.'); }
     } catch (e) { /* banner; aborts are silent */ }
   }
@@ -247,6 +260,15 @@ export function mount(root, ctx) {
       renderProbes(); renderLatency();
     } catch (e) { if (my === seq.probes) failIn(phasesP, e); }
   }
+  async function loadSilences() {
+    const my = ++seq.silences;
+    try {
+      const d = await api.silences({ signal: begin('silences') });
+      if (my !== seq.silences || destroyed) return;
+      D.silences = d || [];
+      renderSilence();
+    } catch (e) { /* the header simply shows no silence */ }
+  }
   async function loadAlerts() {
     const my = ++seq.alerts;
     try {
@@ -278,7 +300,7 @@ export function mount(root, ctx) {
     latency.redraw(); phases.redraw();
     stepMs = null;
     lastPanels = Date.now();
-    track([loadTargets(), loadHops(), loadTimeline(), loadSeries(), loadProbes(), loadAlerts()]);
+    track([loadTargets(), loadSilences(), loadHops(), loadTimeline(), loadSeries(), loadProbes(), loadAlerts()]);
   }
   /** live refresh: move the window forward and refetch whatever is due */
   function refreshLive() {
@@ -288,7 +310,7 @@ export function mount(root, ctx) {
     const cards = due - lastCards >= REFRESH_MS, panels = due - lastPanels >= panelEvery();
     if (!cards && !panels) return;
     const jobs = [];
-    if (cards) jobs.push(loadTargets());
+    if (cards) jobs.push(loadTargets(), loadSilences());
     if (panels) {
       lastPanels = now;
       Object.assign(axis, resolveAxis());
@@ -310,11 +332,65 @@ export function mount(root, ctx) {
     clear(targetSel).append(...D.targets.map((x) => h('option', { value: x.id, selected: x.id === id }, x.name)));
     targetSel.value = String(id);
     editBtn.hidden = !t || t.removed;
+    silenceBtn.hidden = !t;
     if (!t) { title.textContent = 'Target #' + id; clear(statusEl); hostLine.textContent = ''; return; }
     title.textContent = t.name;
     document.title = t.name + ' · pathwatch';
     clear(statusEl).append(statusPill(t.status, t.active));
     hostLine.textContent = t.host + (t.resolved_ip && t.resolved_ip !== t.host ? ' · ' + t.resolved_ip : '') + (t.icmp_interval_ms ? ' · every ' + fmtDuration(t.icmp_interval_ms) : '');
+  }
+
+  function describeSilence(x) {
+    const what = x.source === 'maintenance' ? 'Maintenance window ' + (x.reason || '') : 'Silence' + (x.reason ? ' (' + x.reason + ')' : '');
+    return `${what}: ${x.target_id == null ? 'all targets' : 'this target'}, ${x.rule ? 'rule ' + x.rule : 'all rules'}, until ${fmtDateTime(x.ends_at)}`;
+  }
+  function renderSilence() {
+    clear(silenceEl);
+    const now = serverNow();
+    const act = (D.silences || []).filter((x) => x.starts_at <= now && x.ends_at > now && (x.target_id == null || x.target_id === id));
+    if (!act.length) return;
+    const own = act.filter((x) => x.source !== 'maintenance' && x.target_id === id);
+    const until = Math.max(...act.map((x) => x.ends_at));
+    const label = act.some((x) => !x.rule) ? 'Notifications silenced' : 'Some rules silenced';
+    const untilText = until - now < 20 * 3600e3 ? fmtHM(until) : fmtDateTime(until);
+    silenceEl.append(h('span', { class: 'pill info', title: act.map(describeSilence).join('\n') }, `${label} until ${untilText}`));
+    if (own.length) silenceEl.append(h('button', { class: 'btn sm', type: 'button', title: 'End the silences created for this target', onclick: () => endSilences(own) }, 'End'));
+  }
+  async function endSilences(list) {
+    const ok = await confirmDialog({ title: 'End silence?', message: `Send notifications for ${D.target ? D.target.name : 'this target'} again?`, confirmLabel: 'End silence' });
+    if (!ok) return;
+    try { await Promise.all(list.map((x) => api.deleteSilence(x.id))); } catch (e) { alert(e.message); }
+    loadSilences(); loadTargets();
+  }
+
+  // The verdict reflects the last 5 minutes (like the cards), whatever range the panels show.
+  let diagKey = '';
+  function renderDiagnosis() {
+    const d = D.target && D.target.diagnosis;
+    if (!d) { diagEl.hidden = true; diagKey = ''; return; }
+    const key = JSON.stringify(d);
+    if (key === diagKey) return; // unchanged: keep focus and selection
+    diagKey = key;
+    diagEl.className = 'diag ' + (d.severity || 'info');
+    const hopBtn = d.hop != null ? h('button', { class: 'btn sm', type: 'button', title: 'Select this hop in the hop list and graph it',
+      onclick: () => { push(() => { S.ttl = d.hop; }, true); hopsP.el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, 'Show hop ' + d.hop) : null;
+    clear(diagEl).append(
+      h('div', { class: 'diag-text' },
+        h('div', { class: 'diag-head' }, d.where && WHERE[d.where] ? h('span', { class: 'diag-where' }, WHERE[d.where]) : null, h('strong', null, d.headline)),
+        d.detail ? h('div', { class: 'diag-detail' }, d.detail) : null,
+        h('div', { class: 'diag-note' }, 'Based on the last 5 minutes')));
+    if (hopBtn) diagEl.append(hopBtn);
+    diagEl.hidden = false;
+  }
+  /** tag the hop row where a degradation starts ("problem starts here") */
+  function markProblemHop() {
+    const d = D.target && D.target.diagnosis;
+    const at = diagStartsAtHop(d) ? d.hop : null;
+    for (const [ttl, ref] of hopRefs) {
+      const old = ref.tr.querySelector('.tagline.start');
+      if (ttl === at && !old) ref.tr.querySelector('.hostn').append(h('span', { class: 'tagline start', title: d.headline }, 'problem starts here'));
+      else if (ttl !== at && old) old.remove();
+    }
   }
 
   function sumCard(k, v, sub, cls, title) {
@@ -398,6 +474,7 @@ export function mount(root, ctx) {
       hopTbody.append(tr);
       hopRefs.set(hp.ttl, { tr, cur, hop: hp });
     }
+    markProblemHop();
   }
   function isSelected(hp) { return S.ttl != null ? hp.ttl === S.ttl : !!(hp.is_destination || hp.classification === 'destination'); }
   function markSelected() {
@@ -496,11 +573,17 @@ export function mount(root, ctx) {
     if (!list.length) { alertsP.showEmpty('No alerts for this target.', 'Nothing has fired recently.'); return; }
     const now = serverNow();
     clear(alertsP.content).append(h('div', { class: 'table-scroll' }, h('table', { class: 'list-table stack' },
-      h('tbody', null, list.map((a) => h('tr', null,
-        h('td', null, alertPill(a)),
-        h('td', null, h('strong', null, a.rule), a.message ? h('div', { class: 'alert-msg' }, a.message) : null),
-        h('td', { title: fmtDateTime(a.started_at) }, fmtAgo(a.started_at, now), h('div', { class: 'muted' }, (a.ended_at ? 'lasted ' + fmtDuration(a.ended_at - a.started_at) : 'ongoing'))),
-        h('td', null, a.deliveries && a.deliveries.length ? h('div', { class: 'deliv' }, a.deliveries.map(deliveryPill)) : null)))))));
+      h('tbody', null, list.map((a) => {
+        const href = incidentHref(a, now);
+        const ongoing = a.state === 'firing' || a.ended_at == null;
+        return h('tr', null,
+          h('td', null, alertPill(a)),
+          h('td', null, h('strong', null, href ? h('a', { href, title: 'Show the time of this alert' }, a.rule) : a.rule), a.message ? h('div', { class: 'alert-msg' }, a.message) : null),
+          h('td', { title: fmtDateTime(a.started_at) }, fmtAgo(a.started_at, now), h('div', { class: 'muted' }, (a.ended_at ? 'lasted ' + fmtDuration(a.ended_at - a.started_at) : 'ongoing'))),
+          h('td', null, a.deliveries && a.deliveries.length ? h('div', { class: 'deliv' }, a.deliveries.map(deliveryPill)) : null),
+          h('td', { class: 'right nowrap' }, ongoing ? h('button', { class: 'btn sm', type: 'button', title: 'Hold back notifications for this rule on this target',
+            onclick: () => openSilenceDialog({ targetId: id, targetName: D.target ? D.target.name : null, rule: a.rule, onDone: () => { loadSilences(); loadTargets(); } }) }, 'Silence') : null));
+      })))));
     alertsP.showContent();
   }
 

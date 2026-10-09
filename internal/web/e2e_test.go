@@ -164,7 +164,7 @@ func TestHopCountNeedsLastResp(t *testing.T) {
 		t.Fatalf("lastResp %d, hop count %d, want 2 (the last responding hop of the newest path)", res.lastResp, f.srv.hopCount(v, res))
 	}
 	var sum summaryJSON
-	tj, err := f.srv.buildTarget(context.Background(), v, nil)
+	tj, err := f.srv.buildTarget(context.Background(), v, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -88,22 +88,23 @@ type summaryJSON struct {
 }
 
 type targetJSON struct {
-	ID               int64       `json:"id"`
-	Name             string      `json:"name"`
-	Host             string      `json:"host"`
-	HostKind         string      `json:"host_kind"` // ipv4 | ipv6 | hostname
-	Source           string      `json:"source"`
-	Overridden       bool        `json:"overridden"` // a config-file target edited in the UI
-	Active           bool        `json:"active"`
-	Paused           bool        `json:"paused"`
-	Removed          bool        `json:"removed"`
-	Status           string      `json:"status"`
-	ResolvedIP       *string     `json:"resolved_ip"`
-	ICMPUnresponsive bool        `json:"icmp_unresponsive"`
-	ICMPIntervalMS   *int        `json:"icmp_interval_ms"`
-	LastRound        *int64      `json:"last_round"`
-	Summary          summaryJSON `json:"summary"`
-	Probes           []probeJSON `json:"probes"`
+	ID               int64         `json:"id"`
+	Name             string        `json:"name"`
+	Host             string        `json:"host"`
+	HostKind         string        `json:"host_kind"` // ipv4 | ipv6 | hostname
+	Source           string        `json:"source"`
+	Overridden       bool          `json:"overridden"` // a config-file target edited in the UI
+	Active           bool          `json:"active"`
+	Paused           bool          `json:"paused"`
+	Removed          bool          `json:"removed"`
+	Status           string        `json:"status"`
+	ResolvedIP       *string       `json:"resolved_ip"`
+	ICMPUnresponsive bool          `json:"icmp_unresponsive"`
+	ICMPIntervalMS   *int          `json:"icmp_interval_ms"`
+	LastRound        *int64        `json:"last_round"`
+	Summary          summaryJSON   `json:"summary"`
+	Diagnosis        diagnosisJSON `json:"diagnosis"`
+	Probes           []probeJSON   `json:"probes"`
 }
 
 // targetView resolves everything the API knows about a stored target.
@@ -160,8 +161,9 @@ func (s *Server) handleTargets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]targetJSON, 0, len(rows))
+	dc := s.newDiagContext(rows)
 	for _, row := range rows {
-		tj, err := s.buildTarget(r.Context(), s.viewOf(row), counts)
+		tj, err := s.buildTarget(r.Context(), s.viewOf(row), counts, dc)
 		if err != nil {
 			s.queryFailed(w, r, err)
 			return
@@ -171,7 +173,9 @@ func (s *Server) handleTargets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) buildTarget(ctx context.Context, v targetView, counts map[int64]int) (targetJSON, error) {
+// buildTarget builds the API object of a target. dc may be nil (it is then built for the active
+// targets, for the diagnosis's comparison with other paths).
+func (s *Server) buildTarget(ctx context.Context, v targetView, counts map[int64]int, dc *diagContext) (targetJSON, error) {
 	now := s.now()
 	tj := targetJSON{
 		ID: v.row.ID, Name: v.row.Name, Host: v.row.Host, HostKind: config.HostKind(v.row.Host), Source: v.row.Source,
@@ -205,23 +209,29 @@ func (s *Server) buildTarget(ctx context.Context, v targetView, counts map[int64
 	}
 	tj.LastRound = msPtr(last)
 
-	sum, e2eLoss, httpOK, err := s.summarize(ctx, v, now)
+	sum, e2eLoss, httpOK, e2eSource, err := s.summarize(ctx, v, now)
 	if err != nil {
 		return tj, err
 	}
 	sum.ActiveAlerts = counts[v.row.ID]
 	tj.Summary = sum
 	tj.Status = s.statusOf(v, now, last, sum, e2eLoss, httpOK)
+	if dc == nil {
+		rows, _ := s.d.Store.Targets(false) // without them the diagnosis just cannot compare paths
+		dc = s.newDiagContext(rows)
+	}
+	tj.Diagnosis = s.diagnosisOf(ctx, v, tj, e2eSource, dc)
 	return tj, nil
 }
 
-// summarize computes the 5-minute summary of a target.
-func (s *Server) summarize(ctx context.Context, v targetView, now time.Time) (summaryJSON, *float64, bool, error) {
+// summarize computes the 5-minute summary of a target. It also returns the loss usable for the
+// degraded verdict, whether HTTP had samples, and where the end-to-end figures come from.
+func (s *Server) summarize(ctx context.Context, v targetView, now time.Time) (summaryJSON, *float64, bool, string, error) {
 	var sum summaryJSON
 	plan := store.SinglePlan(now.Add(-5*time.Minute), now, store.TierRaw)
 	e2e, err := s.e2e(ctx, v, plan, true)
 	if err != nil {
-		return sum, nil, false, err
+		return sum, nil, false, "", err
 	}
 	var loss *float64 // loss usable for the degraded verdict
 	if len(e2e.points) > 0 {
@@ -253,7 +263,7 @@ func (s *Server) summarize(ctx context.Context, v targetView, now time.Time) (su
 	for _, p := range v.probesOfType(config.ProbeHTTP) {
 		pc, err := s.d.Store.ProbeCells(ctx, p.ID, p.Type, plan, store.CellOpts{NoHist: true})
 		if err != nil {
-			return sum, nil, false, err
+			return sum, nil, false, "", err
 		}
 		merged.Merge(pc.Total())
 		if c, ok := s.d.Store.LatestCert(p.ID); ok && (certMin.IsZero() || c.Before(certMin)) {
@@ -270,7 +280,7 @@ func (s *Server) summarize(ctx context.Context, v targetView, now time.Time) (su
 		}
 	}
 	sum.CertNotAfter = msPtr(certMin)
-	return sum, loss, httpOK, nil
+	return sum, loss, httpOK, e2e.source, nil
 }
 
 func (s *Server) hopCount(v targetView, e2e e2eResult) int {
@@ -417,7 +427,7 @@ func (s *Server) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) writeTarget(w http.ResponseWriter, r *http.Request, row store.TargetRow, code int) {
 	counts, _, _ := s.d.Store.ActiveAlertCounts()
-	tj, err := s.buildTarget(r.Context(), s.viewOf(row), counts)
+	tj, err := s.buildTarget(r.Context(), s.viewOf(row), counts, nil)
 	if err != nil {
 		s.queryFailed(w, r, err)
 		return

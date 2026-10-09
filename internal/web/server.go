@@ -37,6 +37,7 @@ type Deps struct {
 	Config   *config.Config    // the configuration (used when Settings is nil)
 	Settings *settings.Manager // optional: UI-edited settings and the effective configuration
 	Resolver Resolver          // optional: for /api/resolve (default net.DefaultResolver)
+	Notifier Notifier          // optional: test notifications (the rule engine's outbox sender)
 	Auth     config.Auth
 	Version  string
 	Logger   *slog.Logger
@@ -57,6 +58,7 @@ type Server struct {
 	passSum [32]byte
 	files   http.Handler
 	limiter *authLimiter
+	tests   *channelTests
 }
 
 // New builds the server.
@@ -70,7 +72,7 @@ func New(d Deps) *Server {
 	if d.Hub == nil {
 		d.Hub = NewHub()
 	}
-	s := &Server{d: d, log: d.Logger, hub: d.Hub, mux: http.NewServeMux(), now: d.Now, started: d.Now(), limiter: newAuthLimiter()}
+	s := &Server{d: d, log: d.Logger, hub: d.Hub, mux: http.NewServeMux(), now: d.Now, started: d.Now(), limiter: newAuthLimiter(), tests: newChannelTests()}
 	if d.Config != nil {
 		s.maint = alert.MaintenanceWindows(d.Config.Alerts.MaintenanceWindows)
 	}
@@ -117,6 +119,8 @@ func (s *Server) routes() {
 	m.HandleFunc("PUT /api/settings/{section}", s.handlePutSetting)
 	m.HandleFunc("DELETE /api/settings/{section}", s.handleDeleteSetting)
 	m.HandleFunc("GET /api/resolve", s.handleResolve)
+	m.HandleFunc("GET /api/channels", s.handleChannels)
+	m.HandleFunc("POST /api/channels/{name}/test", s.handleTestChannel)
 	m.HandleFunc("POST /api/targets/{id}/pause", s.handlePause(true))
 	m.HandleFunc("POST /api/targets/{id}/resume", s.handlePause(false))
 	m.HandleFunc("GET /api/overview", s.handleOverview)

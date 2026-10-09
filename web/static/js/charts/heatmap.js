@@ -7,7 +7,7 @@ const STRIP = 28;   // event marker strip above the rows
 const AXIS_H = 24;  // time axis below
 
 export class Heatmap {
-  /** opts: { onSelectTtl(ttl), onZoom(from,to) } */
+  /** opts: { onSelectTtl(ttl), onZoom(from,to), onEvent(ev) (a click on an alert marker) } */
   constructor(host, opts) {
     this.host = host; this.opts = opts;
     this.tl = null; this.axis = { from: 0, to: 1 };
@@ -367,6 +367,8 @@ export class Heatmap {
     }
     const { x, y } = this.pos(e);
     if (Math.abs(x - d.x0) < 5 && Math.abs(y - d.y0) < 5) {
+      const hit = y < this.m.top ? this.eventAt(x, y) : null;
+      if (hit) { if (hit.ev.kind === 'alert' && this.opts.onEvent) { this.hideTip(); this.opts.onEvent(hit.ev); } return; }
       const i = this.rowAt(y);
       if (i >= 0 && this.opts.onSelectTtl) {
         const lab = this.tl.labels && this.tl.labels[i];
@@ -384,11 +386,12 @@ export class Heatmap {
     this.drawOverlay();
     // event marker tooltip
     if (y < m.top && inPlot) {
-      let best = null, bd = 1e9;
-      for (const hit of this.evHits) { const d = Math.hypot(hit.x - x, hit.y - y); if (d < hit.r && d < bd) { best = hit; bd = d; } }
+      const best = this.eventAt(x, y);
+      this.overlay.style.cursor = best && best.ev.kind === 'alert' && this.opts.onEvent ? 'pointer' : 'crosshair';
       if (best) { this.showTip(x, y, best.ev, () => this.eventTip(best.ev)); return; }
       this.hideTip(); return;
     }
+    this.overlay.style.cursor = 'crosshair';
     if (this.hoverRow < 0) { this.hideTip(); return; }
     const i = this.hoverRow;
     // the tooltip only depends on (row, bucket): -1 = no bucket under the pointer
@@ -398,6 +401,13 @@ export class Heatmap {
       if (jj >= 0 && jj < (tl.rtt[i] ? tl.rtt[i].length : 0)) j = jj;
     }
     this.showTip(x, y, i + ':' + j, () => this.cellTip(i, j));
+  }
+
+  /** the event marker under (x, y), if any */
+  eventAt(x, y) {
+    let best = null, bd = 1e9;
+    for (const hit of this.evHits) { const d = Math.hypot(hit.x - x, hit.y - y); if (d < hit.r && d < bd) { best = hit; bd = d; } }
+    return best;
   }
 
   cellTip(i, j) {
@@ -426,6 +436,7 @@ export class Heatmap {
     const d = ev.details || {};
     if (d.rule) rows.push(h('div', null, 'rule: ' + d.rule));
     for (const k of ['from_address', 'to_address', 'old', 'new']) if (d[k]) rows.push(h('div', { class: 'k' }, k.replace('_', ' ') + ': ' + d[k]));
+    if (ev.kind === 'alert' && this.opts.onEvent) rows.push(h('div', { class: 'k' }, 'Click to zoom to this alert'));
     return rows;
   }
 

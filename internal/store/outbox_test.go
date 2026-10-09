@@ -85,3 +85,38 @@ func TestOutboxDueAndNext(t *testing.T) {
 		t.Errorf("%d rows due with nothing pending", len(due))
 	}
 }
+
+func TestLastDeliveries(t *testing.T) {
+	s := openTest(t, nil)
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	if got, err := s.LastDeliveries(); err != nil || len(got) != 0 {
+		t.Fatalf("empty outbox: %v %v", got, err)
+	}
+	enqueue := func(alert int64, channel string, at time.Time) int64 {
+		id, err := s.EnqueueOutbox(alert, channel, "{}", at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	enqueue(1, "webhook", t0)
+	hook := enqueue(2, "webhook", t0.Add(time.Minute))
+	mail := enqueue(2, "email", t0.Add(time.Minute))
+	if err := s.UpdateOutbox(hook, OutboxDelivered, 1, time.Time{}, "", t0.Add(90*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateOutbox(mail, OutboxRetrying, 2, t0.Add(5*time.Minute), "smtp connect: refused", t0.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.LastDeliveries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, e := got["webhook"], got["email"]
+	if len(got) != 2 || w.AlertID != 2 || w.Status != OutboxDelivered || w.Attempts != 1 || !w.At.Equal(t0.Add(90*time.Second)) || w.LastError != nil {
+		t.Errorf("webhook: %+v (all %v)", w, got)
+	}
+	if e.Status != OutboxRetrying || e.Attempts != 2 || !e.At.Equal(t0.Add(time.Minute)) || e.LastError == nil || *e.LastError != "smtp connect: refused" {
+		t.Errorf("email: %+v", e)
+	}
+}

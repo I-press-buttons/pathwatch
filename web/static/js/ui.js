@@ -28,6 +28,35 @@ export function deliveryPill(d) {
   return h('span', { class: 'pill ' + (DELIVERY[d.status] || ''), title: tip }, `${d.channel} · ${d.status}`);
 }
 
+// ---------- diagnosis ----------
+/** Short labels for where a diagnosis places the problem (diagnosis.where in /api/targets). */
+export const WHERE = { local: 'Your network', shared: 'Shared hop', path: 'On the route', destination: 'Destination', server: 'Server', dns: 'DNS' };
+/** Diagnoses that point at the hop where a degradation starts (as opposed to a rate-limited hop). */
+export function diagStartsAtHop(d) { return !!d && d.hop != null && /^(path|path_local|path_shared|destination|destination_loss|e2e_loss)$/.test(d.code); }
+
+// ---------- incidents ----------
+/** Context shown before an alert's start and after its end (the same as the deep links in notifications). */
+export const INCIDENT_PAD_MS = 10 * 60000;
+const LIVE_RANGES = [['1h', 3600e3], ['6h', 6 * 3600e3], ['24h', 86400e3], ['7d', 7 * 86400e3], ['30d', 30 * 86400e3], ['90d', 90 * 86400e3]];
+/**
+ * The target page link that shows an alert: from INCIDENT_PAD_MS before it started to INCIDENT_PAD_MS after it
+ * ended. An ongoing alert gets the smallest live range that includes its start, so the page keeps updating.
+ * Alerts without a target (local connectivity) have no target page: null.
+ */
+export function incidentHref(a, now) {
+  if (!a || a.target_id == null || !isNum(a.started_at)) return null;
+  const base = '#/target/' + a.target_id;
+  const from = a.started_at - INCIDENT_PAD_MS;
+  const ongoing = !isNum(a.ended_at);
+  if (ongoing) {
+    const live = LIVE_RANGES.find(([, ms]) => ms >= now - from);
+    if (live) return base + '?range=' + live[0];
+  }
+  let to = ongoing ? now : Math.min(now, a.ended_at + INCIDENT_PAD_MS);
+  if (to <= from) to = from + INCIDENT_PAD_MS;
+  return `${base}?from=${Math.round(from)}&to=${Math.round(to)}`;
+}
+
 /** A card-like panel with a header, stable content container and a message container (loading/empty/error). */
 export function panel(title, { actions, cls, flush } = {}) {
   const content = h('div', { class: 'panel-content' });

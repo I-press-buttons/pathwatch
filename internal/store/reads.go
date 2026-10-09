@@ -435,6 +435,41 @@ func (s *Store) Deliveries(alertIDs []int64) (map[int64][]Delivery, error) {
 	return out, rows.Err()
 }
 
+// ChannelDelivery is the newest notification of one channel and how its delivery went.
+type ChannelDelivery struct {
+	AlertID   int64
+	Status    string // queued | delivered | retrying | failed | expired
+	Attempts  int
+	At        time.Time // delivered_at when delivered, otherwise when it was queued
+	LastError *string
+}
+
+// LastDeliveries returns the newest outbox row of every channel that has one.
+func (s *Store) LastDeliveries() (map[string]ChannelDelivery, error) {
+	rows, err := s.rdb.Query(`SELECT channel, alert_id, status, attempts, COALESCE(delivered_at, created_at), last_error
+		FROM outbox WHERE id IN (SELECT MAX(id) FROM outbox GROUP BY channel)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]ChannelDelivery{}
+	for rows.Next() {
+		var ch string
+		var d ChannelDelivery
+		var at int64
+		var le sql.NullString
+		if err := rows.Scan(&ch, &d.AlertID, &d.Status, &d.Attempts, &at, &le); err != nil {
+			return nil, err
+		}
+		d.At = fromUs(at)
+		if le.Valid {
+			d.LastError = &le.String
+		}
+		out[ch] = d
+	}
+	return out, rows.Err()
+}
+
 // Silence is a UI-created silence.
 type Silence struct {
 	ID        int64

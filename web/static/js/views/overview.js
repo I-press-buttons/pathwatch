@@ -2,7 +2,7 @@
 import { h, clear, isNum, fmtMs, fmtPct, fmtMos, fmtAgo, clamp, lsGet, lsSet, DASH, plural } from '../util.js';
 import { api, onStream, serverNow } from '../api.js';
 import { getStatus, onStatus } from '../store.js';
-import { statusPill, sparkline, panel, confirmDialog, metricClass } from '../ui.js';
+import { statusPill, sparkline, panel, confirmDialog, metricClass, WHERE } from '../ui.js';
 import { dnsPanel } from './dns.js';
 import { openTargetEditor } from './target-editor.js';
 
@@ -63,6 +63,7 @@ export function mount(root, ctx) {
           h('div', { class: 'name' }, h('a', { href: '#/target/' + t.id }, t.name)),
           h('div', { class: 'host' }, t.host + (t.resolved_ip && t.resolved_ip !== t.host ? ' · ' + t.resolved_ip : ''))),
         statusPill(t.status, t.active)),
+      diagLine(t.diagnosis),
       h('div', { class: 'bigline' },
         h('span', { class: 'big' }, isNum(e2e) ? fmtMs(e2e) : DASH, isNum(e2e) ? h('small', null, ' ms') : null),
         h('span', { class: 'muted' }, t.icmp_unresponsive ? 'e2e (TCP; no ping reply)' : 'end-to-end')),
@@ -73,6 +74,11 @@ export function mount(root, ctx) {
         metric('Hops', isNum(sm.hop_count) ? String(sm.hop_count) : DASH, '')),
       h('div', { class: 'spark' }, sparkline(sp ? sp.points : null)),
       act);
+  }
+  /** one line saying what is wrong, only when something is (healthy cards stay quiet) */
+  function diagLine(d) {
+    if (!d || (d.severity !== 'warn' && d.severity !== 'crit')) return null;
+    return h('div', { class: 'diag-line ' + d.severity }, d.where && WHERE[d.where] ? h('span', { class: 'diag-where' }, WHERE[d.where]) : null, d.headline);
   }
   function metric(k, v, cls) { return h('div', { class: 'metric' }, h('div', { class: 'k' }, k), h('div', { class: 'v ' + (cls || '') }, v)); }
 

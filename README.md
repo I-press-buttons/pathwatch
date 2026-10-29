@@ -85,3 +85,8 @@ pathwatch has no telemetry and only contacts the targets and notification endpoi
 ## License
 
 [MIT](LICENSE)
+
+
+## Security updates (October 2026)
+
+Build with Go 1.26.10 or later; go.mod enforces this minimum. Docker uses a patched, digest-pinned builder and refreshed Alpine runtime. Rebuild and replace existing binaries/images to adopt the crypto/x509 certificate distrust fix. Check the compiler embedded in a deployed binary with `go version -m /path/to/pathwatch`.

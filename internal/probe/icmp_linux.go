@@ -17,9 +17,56 @@ import (
 
 // NewICMPProber creates the Linux ICMP prober. mode is "auto", "raw" or "dgram".
 // "auto" prefers raw sockets (root/CAP_NET_RAW, needed on older NAS kernels) and falls
+// back to unprivileged datagram sockets. The returned mode string is "raw" or "dgram" (the
+// IPv4 prober's); on failure the error explains why neither worked.
+//
+// The returned prober handles both address families. The IPv6 prober is created the same way
+// with the same mode; if it cannot be (no IPv6 stack, no permission) IPv6 destinations fail
+// with a clear per-probe error while IPv4 is unaffected. If only IPv6 works, IPv4 probes fail.
+func NewICMPProber(mode string) (Prober, string, error) {
+	p4, m4, err4 := newICMP4Prober(mode)
+	p6, m6, err6 := newICMP6Prober(mode)
+	switch {
+	case err4 != nil && err6 != nil:
+		return nil, ModeUnavailable, err4
+	case err4 != nil:
+		return &dualProber{v6: p6}, m6, nil
+	case err6 != nil:
+		p6 = nil
+	}
+	return &dualProber{v4: p4, v6: p6}, m4, nil
+}
+
+func newICMP6Prober(mode string) (Prober, string, error) {
+	switch mode {
+	case "raw":
+		p, err := newRaw6Prober()
+		if err != nil {
+			return nil, ModeUnavailable, err
+		}
+		return p, ModeRaw, nil
+	case "dgram":
+		p, err := newDgram6Prober()
+		if err != nil {
+			return nil, ModeUnavailable, err
+		}
+		return p, ModeDgram, nil
+	}
+	if p, err := newRaw6Prober(); err == nil {
+		return p, ModeRaw, nil
+	}
+	p, err := newDgram6Prober()
+	if err != nil {
+		return nil, ModeUnavailable, err
+	}
+	return p, ModeDgram, nil
+}
+
+// newICMP4Prober creates the IPv4 ICMP prober. mode is "auto", "raw" or "dgram".
+// "auto" prefers raw sockets (root/CAP_NET_RAW, needed on older NAS kernels) and falls
 // back to unprivileged datagram sockets. The returned mode string is "raw" or "dgram";
 // on failure the error explains why neither worked.
-func NewICMPProber(mode string) (Prober, string, error) {
+func newICMP4Prober(mode string) (Prober, string, error) {
 	switch mode {
 	case "raw":
 		p, err := newRawProber()

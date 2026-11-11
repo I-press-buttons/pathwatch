@@ -214,3 +214,11 @@ func (s *Store) UpdateOutbox(id int64, status string, attempts int, next time.Ti
 		return err
 	})
 }
+
+// OutboxPending returns the number of notifications still waiting for delivery (queued or
+// retrying). It uses the outbox_status index.
+func (s *Store) OutboxPending() (int, error) {
+	var n int
+	err := s.rdb.QueryRow(`SELECT COUNT(*) FROM outbox WHERE status IN ('queued','retrying')`).Scan(&n)
+	return n, err
+}

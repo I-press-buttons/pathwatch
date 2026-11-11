@@ -45,9 +45,17 @@ export function mount(root, ctx) {
   const resetBtn = h('button', { type: 'button', class: 'btn sm', hidden: true, onclick: () => resetZoom() }, 'Reset zoom');
   const zoomNote = h('span', { class: 'zoom-note' });
   const liveEl = h('span', { class: 'live', title: 'Live updates via the event stream' }, h('span', { class: 'dot' }), h('span', { class: 'lbl' }, 'paused'));
+  // Exports and the report use the range on screen. They are plain same-origin links, so the browser
+  // sends its Basic-auth credentials and the download needs no script (nor anything the CSP forbids).
+  const exportKind = h('select', { 'aria-label': 'Data to export', title: 'Hops: per hop and minute (hour beyond 7 days). Probes: HTTP/TCP probe phases.', onchange: () => updateExportLinks() },
+    [['hops', 'Hops'], ['probes', 'Probes']].map(([v, l]) => h('option', { value: v }, l)));
+  const csvLink = h('a', { class: 'btn sm', href: '#', download: '', title: 'Download the range as CSV' }, 'Export CSV');
+  const jsonLink = h('a', { class: 'btn sm', href: '#', download: '', title: 'Download the range as JSON' }, 'Export JSON');
+  const reportLink = h('a', { class: 'btn sm', href: '#', title: 'Printable report for this range (incidents, first degraded hop, probe impact)' }, 'Report');
+  const exportBar = h('div', { class: 'export-bar', role: 'group', 'aria-label': 'Export and report' }, exportKind, csvLink, jsonLink, reportLink);
   const rangeBar = h('div', { class: 'range-bar' },
     h('div', { class: 'btn-group', role: 'group', 'aria-label': 'Time range' }, rangeBtns, customBtn),
-    customBox, resetBtn, zoomNote, h('div', { style: { flex: 1 } }), liveEl);
+    customBox, resetBtn, zoomNote, h('div', { style: { flex: 1 } }), exportBar, liveEl);
 
   // ================= panels =================
   const cardsEl = h('div', { class: 'cards' });
@@ -180,6 +188,14 @@ export function mount(root, ctx) {
     else lbl.textContent = 'live (polling)';
   }
 
+  function updateExportLinks() {
+    const from = Math.round(axis.from), to = Math.round(axis.to);
+    const q = (extra) => new URLSearchParams({ from: String(from), to: String(to), ...extra }).toString();
+    csvLink.setAttribute('href', `/api/targets/${id}/export?` + q({ format: 'csv', kind: exportKind.value }));
+    jsonLink.setAttribute('href', `/api/targets/${id}/export?` + q({ format: 'json', kind: exportKind.value }));
+    reportLink.setAttribute('href', `#/target/${id}/report?` + q({}));
+  }
+
   function resolveAxis() {
     if (S.zoom) return { from: S.zoom[0], to: S.zoom[1] };
     if (S.custom) return { from: S.custom.from, to: S.custom.to };
@@ -273,7 +289,7 @@ export function mount(root, ctx) {
   function refreshAll() {
     abortAll(); cancelLive();
     Object.assign(axis, resolveAxis());
-    updateZoomNote();
+    updateZoomNote(); updateExportLinks();
     heat.setAxis(axis);
     latency.redraw(); phases.redraw();
     stepMs = null;
@@ -292,7 +308,7 @@ export function mount(root, ctx) {
     if (panels) {
       lastPanels = now;
       Object.assign(axis, resolveAxis());
-      updateZoomNote();
+      updateZoomNote(); updateExportLinks();
       jobs.push(loadHops(), loadTimeline(), loadSeries(), loadProbes());
     }
     track(jobs);

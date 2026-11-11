@@ -106,6 +106,7 @@ func (s *Server) Hub() *Hub { return s.hub }
 func (s *Server) routes() {
 	m := s.mux
 	m.HandleFunc("GET /healthz", s.handleHealthz)
+	m.HandleFunc("GET /metrics", s.handleMetrics) // opt-in (metrics.enabled); behind auth like /api/
 	m.HandleFunc("GET /api/status", s.handleStatus)
 	m.HandleFunc("GET /api/targets", s.handleTargets)
 	m.HandleFunc("POST /api/targets", s.handleCreateTarget)
@@ -124,6 +125,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/targets/{id}/timeline", s.handleTimeline)
 	m.HandleFunc("GET /api/targets/{id}/series", s.handleSeries)
 	m.HandleFunc("GET /api/targets/{id}/probes", s.handleProbes)
+	m.HandleFunc("GET /api/targets/{id}/export", s.handleExport)
+	m.HandleFunc("GET /api/targets/{id}/report", s.handleReport)
 	m.HandleFunc("GET /api/dns", s.handleDNS)
 	m.HandleFunc("GET /api/alerts", s.handleAlerts)
 	m.HandleFunc("GET /api/events", s.handleEvents)

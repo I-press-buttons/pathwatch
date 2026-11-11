@@ -385,3 +385,21 @@ func TestWebhookBodyTemplateAndHeadersValidated(t *testing.T) {
 		t.Fatalf("bad header name accepted: %v", err)
 	}
 }
+
+func TestMetricsOption(t *testing.T) {
+	env := func(string) string { return "" }
+	c, err := Parse(nil, env)
+	if err != nil || c.Metrics.Enabled {
+		t.Fatalf("default: %v enabled=%v, want off", err, c.Metrics.Enabled)
+	}
+	c, err = Parse([]byte("metrics:\n  enabled: true\n"), env)
+	if err != nil || !c.Metrics.Enabled {
+		t.Fatalf("enabled: %v", err)
+	}
+	if _, err := Parse([]byte("metrics:\n  enabld: true\n"), env); err == nil {
+		t.Fatal("unknown metrics key accepted")
+	}
+	if _, err := Parse([]byte(StarterConfig), env); err != nil {
+		t.Fatal(err)
+	}
+}

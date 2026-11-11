@@ -53,6 +53,14 @@ Resolution tier is chosen by the server: raw rounds for ranges ≤ 6h, 1-minute 
     "cert_not_after": 1767225600000,  // null if no HTTPS probe
     "active_alerts": 0
   },
+  "diagnosis": {                      // plain-language verdict, also over the last 5 minutes
+    "severity": "warn",               // ok | info | warn | crit
+    "code": "path_shared",            // see below
+    "where": "shared",                // local | shared | path | destination | server | dns | null
+    "hop": 3,                         // the hop the finding is about, or null
+    "headline": "Loss or delay starts at hop 3 (core1.isp.example, 203.0.113.1), which other targets share",
+    "detail": "All 4 other targets through this hop are affected too, so the problem is probably at AS64500 (Example ISP) rather than at one destination."
+  },
   "probes": [
     {"id": 3, "type": "icmp-trace", "label": "ICMP trace"},
     {"id": 4, "type": "http", "label": "HEAD https://cloudflare.com/"},
@@ -60,6 +68,25 @@ Resolution tier is chosen by the server: raw rounds for ranges ≤ 6h, 1-minute 
   ]
 }]
 ```
+
+`diagnosis` explains the status from what the hop classifier, the probes and the alert engine
+know, checked from the most fundamental cause to the most specific. Codes:
+
+| code | meaning |
+|---|---|
+| `ok`, `learning` | nothing wrong (`learning`: latency baselines are still being collected) |
+| `ok_rate_limited` | nothing wrong; `hop` is the first router that drops pings while the path beyond it is clean (ICMP rate-limiting) |
+| `paused`, `removed`, `nodata` | not measured right now (`detail` says why when it can) |
+| `local_outage` | the gateway stopped answering, or every target fails at once |
+| `path_local`, `path_shared`, `path` | the hop classifier found a real degradation starting at `hop`: inside your network, at a hop other degraded targets share, or on this target's route only |
+| `destination` | only the destination is degraded |
+| `e2e_loss` | end-to-end loss above the status threshold; with a `hop` when every hop from it to the destination loses pings (the HTTP/TCP probes may still succeed) |
+| `destination_loss` | only the destination drops pings (with clean HTTP/TCP probes it probably limits its replies) |
+| `http_failure`, `tcp_failure` | the probes fail; `where` follows the error (an HTTP status or refused connection: `server`; a name that does not resolve: `dns`; a timeout with a clean path: `server`) |
+| `http_slow`, `http_slow_server`, `http_slow_network`, `http_slow_dns`, `http_slow_transfer` | an `http_latency` alert is firing, attributed to the HTTP phase that grew the most against the 6 hours before the alert |
+| `cert_expiry`, `alert`, `degraded` | another active alert, or a status threshold without a more specific cause |
+
+`severity` follows the status: `crit` while an alert fires, `warn` when degraded or silenced.
 
 ### Target definitions
 
@@ -264,6 +291,34 @@ Kinds: `route_change`, `rate_limited`, `icmp_unresponsive`, `gap`, `local_outage
 (or `starts_at`/`ends_at`). Requires `Content-Type: application/json`. Response: the silence.
 
 `DELETE /api/silences/{id}` → 204.
+
+## Notification channels
+
+Channels are configured in the config file only (`alerts.notify`); the API shows their state and
+sends test notifications. Webhook URLs, header values and SMTP credentials are never returned;
+for environment variables only whether they are set.
+
+`GET /api/channels`
+```json
+[{"name": "webhook", "configured": true, "active": true,
+  "summary": "discord preset · URL from $PATHWATCH_WEBHOOK_URL",
+  "warnings": [],                     // e.g. "environment variable PATHWATCH_WEBHOOK_URL is empty, …"
+  "last_delivery": {"alert_id": 12, "status": "delivered", "attempts": 1, "at": 1759499300000, "error": null},
+  "last_test": {"ok": true, "error": null, "at": 1759500000000, "duration_ms": 312.4}},
+ {"name": "email", "configured": false, "active": false, "summary": "", "warnings": [], "last_delivery": null, "last_test": null}]
+```
+`active` is false when the configuration was rejected at startup. `last_delivery` is the newest
+outbox row of the channel; `last_test` is kept in memory until a restart.
+
+`POST /api/channels/{webhook|email}/test` sends a test notification right away, bypassing the
+outbox (nothing is stored or retried). It is a one-shot event: `state: "event"`, `rule_type:
+"test"`, `rule: "test-notification"`, `alert_id: 0`, no target, and a link to the alerts page when
+`public_url` is set. Response `200` with the outcome, also when delivery failed:
+```json
+{"ok": false, "error": "webhook returned HTTP 400", "at": 1759500000000, "duration_ms": 87.1}
+```
+`404` for an unknown channel, `409` when it is not configured, `429` with `Retry-After` within 10 s
+of the previous test of the same channel.
 
 ## Live stream (SSE)
 

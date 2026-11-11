@@ -8,10 +8,12 @@ Give home labs, small networks and anyone troubleshooting flaky connectivity a f
 
 ## Features
 
+- **Plain-language diagnosis**: each target says what is wrong and where, for example "Loss or delay starts at hop 3, which other targets share" (your ISP) versus "the web server answers with an error (HTTP 503)", and explains rate-limited hops instead of alarming about them.
 - **Hop-by-hop path analysis**: sent/lost, loss %, min/avg/max/current/p95 and jitter for every hop, with inline latency bars and hostname/ASN enrichment.
 - **Path timeline**: a per-hop heatmap over time with route changes and monitor gaps marked, updated live.
 - **End-to-end probes**: HTTP/HTTPS (DNS, connect, TLS, TTFB, transfer), TCP connect and DNS, correlated on the same time axis as the hops.
-- **Rate-limit-aware alerting**: end-to-end probes decide; loss on an intermediate router alone never pages you. Hysteresis, cooldowns, silences, maintenance windows, and queued retries. Webhook (Discord, Slack, ntfy, generic) and email channels.
+- **Rate-limit-aware alerting**: end-to-end probes decide; loss on an intermediate router alone never pages you. Hysteresis, cooldowns, silences, maintenance windows, and queued retries. Webhook (Discord, Slack, ntfy, generic) and email channels, with a "Send test" button per channel (Settings) and `pathwatch notify-test`.
+- **From alert to evidence in one click**: every alert opens the target page at the time it happened, alert markers on the timeline zoom to the incident, and a target or a single rule can be silenced from the target page.
 - **MOS score** per target from latency, jitter and loss.
 - **Long-term history** in SQLite with automatic rollups and retention.
 - **Configurable from the UI or YAML**: manage targets (hostname, IPv4, IPv6), intervals, thresholds and alert rules in the browser, or keep everything in a version-controlled file.
@@ -44,6 +46,8 @@ docker run -d --name pathwatch \
 Open <http://localhost:8095> and log in as `admin`. `--network host` makes probes follow your real traffic path, and `--cap-add NET_RAW` allows raw ICMP for hop tracing. The container runs as root but drops every other capability, cannot gain privileges, and has a read-only root filesystem; only `/data` is writable (see [Container hardening](#container-hardening)). If `PATHWATCH_PASSWORD` is omitted, a random one is saved to `/data/.pathwatch-password` and logged.
 
 To build from source (Go 1.26, latest patch release recommended; no C toolchain): `go build ./cmd/pathwatch && ./pathwatch run --config pathwatch.yaml`. A one-shot trace is available with `pathwatch trace <host>`.
+
+After setting up a webhook or email channel, check it end to end with Settings → Notification channels → Send test, or `docker exec pathwatch pathwatch notify-test`.
 
 ### Verifying downloads
 

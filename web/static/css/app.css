@@ -246,6 +246,23 @@ table.hops td.ip, table.hops td.hostn { text-align: left; }
 table.hops td.hostn { max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
 table.hops .tagline { display: inline-block; margin-left: 6px; font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 4px; border: 1px solid var(--border-strong); color: var(--text-muted); vertical-align: 1px; }
 table.hops .tagline.rl { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--surface)); }
+table.hops .tagline.start { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 50%, var(--surface)); }
+
+/* ---------- diagnosis (target page banner, overview card line) ---------- */
+.diag { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 12px; padding: 10px 14px; border: 1px solid var(--border); border-left: 4px solid var(--info); border-radius: var(--radius); background: var(--surface); }
+.diag.ok { border-left-color: var(--ok); }
+.diag.warn { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 7%, var(--surface)); }
+.diag.crit { border-left-color: var(--crit); background: color-mix(in srgb, var(--crit) 7%, var(--surface)); }
+.diag-text { flex: 1; min-width: 0; }
+.diag-head { font-size: 14.5px; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.diag-detail { margin-top: 3px; font-size: 13px; color: var(--text-muted); }
+.diag-note { margin-top: 3px; font-size: 11.5px; color: var(--text-faint); }
+.diag-where { font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .3px; color: var(--text-muted); padding: 0 6px; border: 1px solid var(--border-strong); border-radius: 4px; }
+.diag-line { margin-top: 6px; font-size: 12.5px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.diag-line .diag-where { margin-right: 6px; font-size: 10.5px; }
+.diag-line.warn { color: var(--warn); }
+.diag-line.crit { color: var(--crit); }
+@media (max-width: 760px) { .diag { flex-direction: column; } }
 table.hops .badge-lb { display: inline-block; margin-left: 5px; font-size: 11px; font-weight: 700; padding: 0 5px; border-radius: 4px; background: color-mix(in srgb, var(--info) 18%, var(--surface)); color: var(--info); cursor: help; }
 .loss-hi { color: var(--crit); font-weight: 700; } .loss-mid { color: var(--warn); font-weight: 600; }
 td.cell-lat { width: 220px; min-width: 160px; padding: 3px 8px; }
@@ -300,6 +317,10 @@ tr.flash td.cur { animation: curflash .7s ease-out; }
 .alert-msg { color: var(--text-muted); font-size: 12.5px; margin-top: 2px; }
 .cmp { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .cmp .base { color: var(--text-muted); }
+.list-table td.nowrap { white-space: nowrap; }
+.list-table td.right .btn + .btn { margin-left: 4px; }
+.silence-note { display: inline-flex; gap: 6px; align-items: center; }
+.silence-note:empty { display: none; }
 @media (max-width: 760px) {
   .list-table.stack thead { display: none; }
   .list-table.stack tr { display: block; padding: 8px 10px; border-bottom: 1px solid var(--border); }

@@ -92,6 +92,8 @@ export const api = {
   silences: (o) => request('GET', '/api/silences', o),
   createSilence: (body) => request('POST', '/api/silences', { body, quiet: true }),
   deleteSilence: (id) => request('DELETE', `/api/silences/${id}`, { quiet: true }),
+  channels: (o) => request('GET', '/api/channels', o),
+  testChannel: (name) => request('POST', `/api/channels/${encodeURIComponent(name)}/test`, { quiet: true }),
 };
 
 // ---------------- SSE ----------------

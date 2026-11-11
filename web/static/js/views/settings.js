@@ -6,6 +6,7 @@ import { getStatus, onStatus, refreshStatus } from '../store.js';
 import { getSkew } from '../api.js';
 import { panel } from '../ui.js';
 import { dnsPanel } from './dns.js';
+import { channelsPanel } from './channels.js';
 import { settingsEditors } from './settings-editors.js';
 
 const ICMP_TEXT = {
@@ -18,11 +19,12 @@ export function mount(root) {
   const themeP = panel('Theme');
   const aboutP = panel('About this server');
   const dns = dnsPanel({ title: 'DNS probe results', range: '6h' });
+  const channels = channelsPanel();
   const editors = settingsEditors({ onSaved: () => { refreshStatus(); dns.load(); } });
   root.append(
     h('div', { class: 'page-head' }, h('h1', null, 'Settings'),
       h('span', { class: 'sub' }, 'Monitoring settings are saved on the server and apply immediately; the theme is saved in this browser.')),
-    ...editors.els, dns.el, themeP.el, aboutP.el);
+    ...editors.els, channels.el, dns.el, themeP.el, aboutP.el);
 
   function renderThemes() {
     const pref = getPref();
@@ -71,6 +73,7 @@ export function mount(root) {
   const offs = [onPrefChange(renderThemes), onStatus(renderAbout)];
   refreshStatus();
   editors.load();
+  channels.load();
   dns.load();
   const t = setInterval(() => dns.load(), 15000);
   return { destroy() { offs.forEach((f) => f()); clearInterval(t); } };

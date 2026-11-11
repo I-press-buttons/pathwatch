@@ -18,6 +18,8 @@ const usage = `pathwatch - self-hosted network path monitor
 Usage:
   pathwatch [run] [--config pathwatch.yaml]   run the monitor and web UI (default)
   pathwatch check-config [--config FILE]      validate the configuration and exit
+  pathwatch notify-test [--config FILE] [--channel webhook|email]
+                                              send a test notification over the alert channels
   pathwatch trace [options] <host>            one-shot mtr-style trace to stdout
   pathwatch version                           print the version
 
@@ -36,6 +38,8 @@ func main() {
 		code = runCmd(args)
 	case "check-config":
 		code = checkConfigCmd(args)
+	case "notify-test":
+		code = notifyTestCmd(args)
 	case "trace":
 		code = traceCmd(args)
 	case "version", "--version":

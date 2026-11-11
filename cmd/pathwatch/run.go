@@ -198,7 +198,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	}
 	srv := web.New(web.Deps{
 		Store: st, Sched: sched, Analyzer: an, Enrich: en, Hub: hub, Config: cfg, Settings: mgr, Auth: auth,
-		Version: version, Logger: log, Static: static,
+		Notifier: engine.Sender(), Version: version, Logger: log, Static: static,
 	})
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {

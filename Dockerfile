@@ -7,7 +7,7 @@
 # the pure-Go binary for the *target* platform. No QEMU is needed for the Go
 # compile, which keeps multi-arch builds fast.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.0-alpine@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS build
 
 ARG TARGETOS
 ARG TARGETARCH

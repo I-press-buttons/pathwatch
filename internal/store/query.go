@@ -759,6 +759,21 @@ func (s *Store) LastRounds(targetID int64, n int) ([]Round, error) {
 	return out, nil
 }
 
+// LastProbeFailure returns the error of the newest failed sample of an HTTP, TCP or DNS probe
+// taken at or after since.
+func (s *Store) LastProbeFailure(probeID int64, typ string, since time.Time) (string, bool) {
+	table := map[string]string{"http": "http_samples", "tcp": "tcp_samples", "dns": "dns_samples"}[typ]
+	if table == "" {
+		return "", false
+	}
+	var v sql.NullString
+	err := s.rdb.QueryRow(`SELECT error FROM `+table+` WHERE probe_id=? AND ts>=? AND error IS NOT NULL AND error<>'' ORDER BY ts DESC LIMIT 1`, probeID, us(since)).Scan(&v)
+	if err != nil || !v.Valid {
+		return "", false
+	}
+	return v.String, true
+}
+
 // LastProbeSample returns the timestamp of the newest sample of a probe.
 func (s *Store) LastProbeSample(probeID int64, typ string) (time.Time, bool) {
 	table := map[string]string{"http": "http_samples", "tcp": "tcp_samples", "dns": "dns_samples"}[typ]

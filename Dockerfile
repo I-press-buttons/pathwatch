@@ -7,7 +7,7 @@
 # the pure-Go binary for the *target* platform. No QEMU is needed for the Go
 # compile, which keeps multi-arch builds fast.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.0-alpine@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS build
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -43,7 +43,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # reliably as root + NET_RAW on Synology kernels, where unprivileged ICMP
 # ("ping group") sockets are often not enabled.
 # ---------------------------------------------------------------------------
-FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+FROM alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f
 
 ARG VERSION=dev
 

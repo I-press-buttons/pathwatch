@@ -47,7 +47,7 @@ docker run -d --name pathwatch \
 
 Open <http://localhost:8095> and log in as `admin`. `--network host` makes probes follow your real traffic path, and `--cap-add NET_RAW` allows raw ICMP for hop tracing. The container runs as root but drops every other capability, cannot gain privileges, and has a read-only root filesystem; only `/data` is writable (see [Container hardening](#container-hardening)). If `PATHWATCH_PASSWORD` is omitted, a random one is saved to `/data/.pathwatch-password` and logged.
 
-To build from source (Go 1.26, latest patch release recommended; no C toolchain): `go build ./cmd/pathwatch && ./pathwatch run --config pathwatch.yaml`. A one-shot trace is available with `pathwatch trace <host>`.
+To build from source (Go 1.26.10 or later, latest 1.27 patch recommended; no C toolchain): `go build ./cmd/pathwatch && ./pathwatch run --config pathwatch.yaml`. A one-shot trace is available with `pathwatch trace <host>`.
 
 After setting up a webhook or email channel, check it end to end with Settings → Notification channels → Send test, or `docker exec pathwatch pathwatch notify-test`.
 

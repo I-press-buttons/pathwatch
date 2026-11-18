@@ -23,7 +23,7 @@ import (
 type diagnosisJSON struct {
 	Severity string  `json:"severity"` // ok | info | warn | crit
 	Code     string  `json:"code"`
-	Where    *string `json:"where"` // local | shared | path | destination | server | dns; null when not localized
+	Where    *string `json:"where"` // local | isp | shared | path | destination | server | dns; null when not localized
 	Hop      *int    `json:"hop"`   // the hop the finding is about (where a degradation starts, or a rate-limited hop)
 	Headline string  `json:"headline"`
 	Detail   string  `json:"detail"`
@@ -36,6 +36,9 @@ type hopRef struct {
 	Hostname string
 	ASN      int
 	ASName   string
+	// ISP is set when the hop belongs to the user's internet provider: the first hop outside the
+	// home network, a carrier-grade NAT address, or a hop in the same AS as that first hop.
+	ISP bool
 }
 
 // label is "hop 3 (core1.example.net, 203.0.113.1)".
@@ -77,6 +80,9 @@ func (h hopRef) network() string {
 	}
 	if a, ok := h.addr(); ok && cgnat.Contains(a.Unmap()) {
 		return "your ISP (the hop is in its carrier-grade NAT range)"
+	}
+	if h.ISP {
+		return "your ISP"
 	}
 	return "that hop's network"
 }
@@ -122,6 +128,9 @@ type diagInput struct {
 	TCPError  string        // newest TCP failure of the last 5 minutes
 	Slow      *slowPhase
 	Learning  bool
+	// DNSDown names a local DNS resolver probe that is failing right now ("adguard (192.168.1.5:53)"),
+	// so a name-resolution failure of the target can be blamed on it.
+	DNSDown string
 }
 
 // e2eICMP is the e2eResult source of a destination that answers Echo Requests.
@@ -232,6 +241,14 @@ func pathDiagnosis(in diagInput, sev string) diagnosisJSON {
 		d.Code, d.Where = "path_local", where("local")
 		d.Headline = "Loss or delay starts at " + k.label() + ", inside your network"
 		d.Detail = "That hop and everything after it, including the destination, are affected. Check your router, Wi-Fi or cabling."
+	case k.ISP:
+		d.Code, d.Where = "path_isp", where("isp")
+		d.Headline = "Loss or delay starts at " + k.label() + ", at your ISP"
+		d.Detail = "Your own network answers normally; the trouble begins at your internet provider's first routers."
+		if in.SharedAffected > 0 {
+			d.Detail += " " + othersThrough(in.SharedAffected, in.SharedThrough, "affected too") + "."
+		}
+		d.Detail += " If it lasts, report it to your ISP with the hop shown here."
 	case in.SharedAffected > 0:
 		d.Code, d.Where = "path_shared", where("shared")
 		d.Headline = "Loss or delay starts at " + k.label() + ", which other targets share"
@@ -283,6 +300,12 @@ func lossDiagnosis(in diagInput, loss float64, sev string) diagnosisJSON {
 	case k.TTL == 1 || k.inside():
 		d.Where = where("local")
 		d.Detail += " It is inside your network: check your router, Wi-Fi or cabling."
+	case k.ISP:
+		d.Where = where("isp")
+		d.Detail += " It is at your ISP, not in your own network."
+		if in.SharedAffected > 0 {
+			d.Detail += " " + othersThrough(in.SharedAffected, in.SharedThrough, "losing packets too") + "."
+		}
 	case in.SharedAffected > 0:
 		d.Where = where("shared")
 		d.Detail += " " + othersThrough(in.SharedAffected, in.SharedThrough, "losing packets too") + ", so the problem is probably at " + k.network() + "."
@@ -376,7 +399,12 @@ func httpFailure(in diagInput, sev string) diagnosisJSON {
 	case "dns":
 		d.Where = where("dns")
 		d.Headline = "The host name does not resolve"
-		d.Detail = "Check the name or your DNS resolver (a DNS probe in Settings can watch the resolver)."
+		if in.DNSDown != "" {
+			d.Headline += ": your DNS resolver is failing"
+			d.Detail = "The DNS probe of " + in.DNSDown + " fails too, so the resolver, not this host, is the cause."
+		} else {
+			d.Detail = "Check the name or your DNS resolver (a DNS probe in Settings can watch the resolver)."
+		}
 	case "refused":
 		d.Where = where("server")
 		d.Headline = "The server refuses connections"
@@ -539,6 +567,8 @@ type diagContext struct {
 	through  map[string]map[int64]bool  // hop address -> running targets whose latest path has it
 	analyses map[int64]analyze.Analysis // fresh classifier results by target
 	degraded map[int64]analyze.Analysis // the ones with a real degradation
+	dns      []dnsHealth                // the DNS resolver probes over the last 5 minutes
+	dnsDown  string                     // a failing local DNS resolver probe (see diagInput.DNSDown)
 }
 
 // affected reports whether a target is losing packets to its destination or degraded.
@@ -583,13 +613,16 @@ func (s *Server) newDiagContext(rows []store.TargetRow) *diagContext {
 	if s.d.Analyzer != nil {
 		dc.local = s.d.Analyzer.Local()
 	}
-	if as, err := s.d.Store.ActiveAlerts(); err == nil {
+	as, err := s.d.Store.ActiveAlerts()
+	if err == nil {
 		for _, a := range as {
 			if a.TargetID != nil {
 				dc.alerts[*a.TargetID] = append(dc.alerts[*a.TargetID], a)
 			}
 		}
 	}
+	dc.dns = s.dnsHealthOf(context.Background(), as)
+	dc.dnsDown = localDNSDown(dc.dns)
 	var ids []int64
 	for _, row := range rows {
 		if !row.Active || row.Paused {
@@ -658,6 +691,7 @@ func (s *Server) diagInputOf(ctx context.Context, v targetView, tj targetJSON, e
 		HTTPSuccess: tj.Summary.HTTPSuccess, HTTPLimit: th.DegradedHTTPSuccessPct,
 		Alerts:   dc.alerts[v.row.ID],
 		Learning: tj.Status == "learning",
+		DNSDown:  dc.dnsDown,
 	}
 	if p, ok := dc.paths[v.row.ID]; ok {
 		in.DestTTL = p.DestTTL
@@ -719,7 +753,58 @@ func (s *Server) hopRefOf(dc *diagContext, targetID int64, ttl int) hopRef {
 			h.Hostname, h.ASN, h.ASName = info.Hostname, info.ASN, info.ASName
 		}
 	}
+	h.ISP = s.isISP(dc, targetID, h)
 	return h
+}
+
+// firstPublic returns the first hop of the target's latest path outside the home network (not
+// private, link-local, loopback or carrier-grade NAT), short of the destination.
+func (dc *diagContext) firstPublic(targetID int64) (int, string, bool) {
+	dest := dc.paths[targetID].DestTTL
+	best, addr := 0, ""
+	for _, h := range dc.hops[targetID] {
+		if h.Idx != 0 || (dest > 0 && h.TTL >= dest) || (best != 0 && h.TTL >= best) {
+			continue
+		}
+		a, err := netip.ParseAddr(h.Address)
+		if err != nil {
+			continue
+		}
+		a = a.Unmap()
+		if a.IsPrivate() || a.IsLinkLocalUnicast() || a.IsLoopback() || cgnat.Contains(a) {
+			continue
+		}
+		best, addr = h.TTL, h.Address
+	}
+	return best, addr, best > 0
+}
+
+// isISP reports whether hop h (not the destination) belongs to the user's internet provider.
+// Without AS data only the first public hop and carrier-grade NAT addresses count, so a
+// problem further out is never blamed on the ISP by guesswork.
+func (s *Server) isISP(dc *diagContext, targetID int64, h hopRef) bool {
+	if h.inside() {
+		return false
+	}
+	if dest := dc.paths[targetID].DestTTL; dest > 0 && h.TTL >= dest {
+		return false
+	}
+	if a, ok := h.addr(); ok && cgnat.Contains(a.Unmap()) {
+		return true
+	}
+	ttl, addr, ok := dc.firstPublic(targetID)
+	if !ok {
+		return false
+	}
+	if h.TTL == ttl {
+		return true
+	}
+	if h.ASN != 0 && h.TTL > ttl && s.d.Enrich != nil {
+		if ip, err := netip.ParseAddr(addr); err == nil {
+			return s.d.Enrich.Lookup(ip).ASN == h.ASN
+		}
+	}
+	return false
 }
 
 // shared counts the other running targets whose path goes through addr, and how many of them

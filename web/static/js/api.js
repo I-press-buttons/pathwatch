@@ -88,6 +88,7 @@ export const api = {
   probes: (id, params, o) => request('GET', `/api/targets/${id}/probes`, { params, ...o }),
   report: (id, params, o) => request('GET', `/api/targets/${id}/report`, { params, ...o }),
   dns: (params, o) => request('GET', '/api/dns', { params, ...o }),
+  network: (o) => request('GET', '/api/network', o),
   alerts: (params, o) => request('GET', '/api/alerts', { params, ...o }),
   events: (params, o) => request('GET', '/api/events', { params, ...o }),
   silences: (o) => request('GET', '/api/silences', o),

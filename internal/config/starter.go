@@ -145,7 +145,9 @@ alerts:
   # outbox:
   #   max_age: 24h                       # give up on undelivered notifications after this
   #
-  # Webhook: the URL is a secret and is read from an environment variable.
+  # Maintenance windows, the heartbeat and notification channels can also be set up in the
+  # web UI (Settings), which can store the webhook URL and SMTP password itself.
+  # Webhook: here the URL is a secret and is read from an environment variable.
   # Presets: generic (JSON, for n8n / Home Assistant), discord, slack, ntfy.
   # notify:
   #   webhook:

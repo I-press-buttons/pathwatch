@@ -8,10 +8,15 @@ import (
 // Overrides are the settings edited in the web UI and stored in the database. Each non-nil
 // section replaces the same section of the config file; nil means "as in the config file".
 type Overrides struct {
-	Defaults  *Defaults
-	Status    *StatusConfig
-	Alerts    *AlertSettings
-	DNSProbes *[]DNSProbeConfig
+	Defaults    *Defaults
+	Status      *StatusConfig
+	Alerts      *AlertSettings
+	DNSProbes   *[]DNSProbeConfig
+	Maintenance *[]MaintenanceWindow
+	Notify      *NotifySettings
+	Heartbeat   *HeartbeatConfig
+	Retention   *RetentionSettings
+	Enrich      *EnrichSettings
 }
 
 // WithOverrides returns the effective configuration: c with the UI overrides applied, the
@@ -35,6 +40,27 @@ func (c *Config) WithOverrides(o Overrides, edited map[string]TargetConfig, ui [
 	e.DNSProbes = append([]DNSProbeConfig(nil), c.DNSProbes...)
 	if o.DNSProbes != nil {
 		e.DNSProbes = append([]DNSProbeConfig(nil), (*o.DNSProbes)...)
+	}
+	e.Alerts.MaintenanceWindows = append([]MaintenanceWindow(nil), c.Alerts.MaintenanceWindows...)
+	if o.Maintenance != nil {
+		e.Alerts.MaintenanceWindows = append([]MaintenanceWindow(nil), (*o.Maintenance)...)
+	}
+	// copies, so applying defaults never writes through to c or the stored overrides
+	e.Alerts.Notify = NotifyConfig{Webhook: c.Alerts.Notify.Webhook.clone(), Email: c.Alerts.Notify.Email.clone()}
+	if o.Notify != nil {
+		e.Alerts.Notify = NotifyConfig{Webhook: o.Notify.Webhook.clone(), Email: o.Notify.Email.clone()}
+		e.Alerts.Outbox.MaxAge = o.Notify.OutboxMaxAge
+	}
+	if o.Heartbeat != nil {
+		e.Alerts.Heartbeat = *o.Heartbeat
+	}
+	if o.Retention != nil {
+		raw, m1, h1 := o.Retention.Raw, o.Retention.Rollup1m, o.Retention.Rollup1h
+		e.Storage.RawRetention, e.Storage.Rollup1mRetention, e.Storage.Rollup1hRetention = &raw, &m1, &h1
+	}
+	if o.Enrich != nil {
+		v := o.Enrich.ReverseDNS
+		e.Enrich.ReverseDNS = &v
 	}
 	e.Targets = append([]TargetConfig(nil), c.Targets...)
 	for i, tc := range e.Targets {

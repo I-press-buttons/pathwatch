@@ -17,7 +17,7 @@ const ICMP_TEXT = {
 export function mount(root) {
   const themeP = panel('Theme');
   const aboutP = panel('About this server');
-  const dns = dnsPanel({ title: 'DNS probe results', range: '6h' });
+  const dns = dnsPanel({ title: 'DNS probe results', range: '6h', emptyHint: 'Add one in DNS probe setup to monitor a resolver such as your router or Pi-hole.' });
   const editors = settingsEditors({ onSaved: () => { refreshStatus(); dns.load(); } });
   root.append(
     h('div', { class: 'page-head' }, h('h1', null, 'Settings'),

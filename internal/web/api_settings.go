@@ -35,6 +35,13 @@ func dnsList(l []config.DNSProbeConfig) []config.DNSProbeConfig {
 	return l
 }
 
+func maintList(l []config.MaintenanceWindow) []config.MaintenanceWindow {
+	if l == nil {
+		return []config.MaintenanceWindow{}
+	}
+	return l
+}
+
 // handleSettings returns every setting the UI can edit.
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	if s.d.Settings == nil {
@@ -49,6 +56,15 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"status":     sectionJSON{source(ov.Status != nil), eff.Status, file.Status},
 		"alerts":     sectionJSON{source(ov.Alerts != nil), eff.Alerts.Settings(), file.Alerts.Settings()},
 		"dns_probes": sectionJSON{source(ov.DNSProbes != nil), dnsList(eff.DNSProbes), dnsList(file.DNSProbes)},
+		"maintenance_windows": sectionJSON{source(ov.Maintenance != nil),
+			maintList(eff.Alerts.MaintenanceWindows), maintList(file.Alerts.MaintenanceWindows)},
+		"notify": sectionJSON{source(ov.Notify != nil),
+			config.RedactNotify(eff.Alerts.NotifySettings()), config.RedactNotify(file.Alerts.NotifySettings())},
+		"heartbeat": sectionJSON{source(ov.Heartbeat != nil), eff.Alerts.Heartbeat, file.Alerts.Heartbeat},
+		"retention": sectionJSON{source(ov.Retention != nil), eff.Storage.RetentionSettings(), file.Storage.RetentionSettings()},
+		"enrich": sectionJSON{source(ov.Enrich != nil),
+			config.EnrichSettings{ReverseDNS: eff.ReverseDNSEnabled()}, config.EnrichSettings{ReverseDNS: file.ReverseDNSEnabled()}},
+		"notify_env_prefix": config.NotifyEnvPrefix,
 		"channels": map[string]bool{
 			"webhook": eff.Alerts.Notify.Webhook != nil,
 			"email":   eff.Alerts.Notify.Email != nil,
@@ -92,6 +108,39 @@ func (s *Server) handlePutSetting(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		err = s.d.Settings.SetDNSProbes(&v)
+	case "maintenance_windows":
+		var v []config.MaintenanceWindow
+		if !decodeStrict(w, r, &v) {
+			return
+		}
+		if v == nil {
+			v = []config.MaintenanceWindow{}
+		}
+		err = s.d.Settings.SetMaintenanceWindows(&v)
+	case "notify":
+		var v config.NotifySettings
+		if !decodeStrict(w, r, &v) {
+			return
+		}
+		err = s.d.Settings.SetNotify(&v)
+	case "heartbeat":
+		var v config.HeartbeatConfig
+		if !decodeStrict(w, r, &v) {
+			return
+		}
+		err = s.d.Settings.SetHeartbeat(&v)
+	case "retention":
+		var v config.RetentionSettings
+		if !decodeStrict(w, r, &v) {
+			return
+		}
+		err = s.d.Settings.SetRetention(&v)
+	case "enrich":
+		var v config.EnrichSettings
+		if !decodeStrict(w, r, &v) {
+			return
+		}
+		err = s.d.Settings.SetEnrich(&v)
 	default:
 		writeError(w, http.StatusNotFound, "unknown settings section")
 		return
@@ -118,6 +167,16 @@ func (s *Server) handleDeleteSetting(w http.ResponseWriter, r *http.Request) {
 		err = s.d.Settings.SetAlerts(nil)
 	case "dns_probes":
 		err = s.d.Settings.SetDNSProbes(nil)
+	case "maintenance_windows":
+		err = s.d.Settings.SetMaintenanceWindows(nil)
+	case "notify":
+		err = s.d.Settings.SetNotify(nil)
+	case "heartbeat":
+		err = s.d.Settings.SetHeartbeat(nil)
+	case "retention":
+		err = s.d.Settings.SetRetention(nil)
+	case "enrich":
+		err = s.d.Settings.SetEnrich(nil)
 	default:
 		writeError(w, http.StatusNotFound, "unknown settings section")
 		return

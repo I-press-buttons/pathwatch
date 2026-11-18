@@ -302,3 +302,14 @@ func between(line string) string {
 	}
 	return line[i+1 : j]
 }
+
+func TestEmailLiteralCredentials(t *testing.T) {
+	f := newFakeSMTP(t, false, false, true)
+	cfg := emailCfg(f, "none")
+	cfg.UsernameEnv, cfg.PasswordEnv, cfg.Username, cfg.Password = "", "", "alice", "s3cret"
+	if err := emailSender(cfg).Send(context.Background(), noteFor(StateFiring)); err != nil {
+		t.Fatal(err)
+	}
+	m := f.messages()
+	want(t, len(m) == 1 && m[0].authed == "|alice|s3cret", "AUTH PLAIN with the stored credentials, got %+v", m)
+}

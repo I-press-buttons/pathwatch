@@ -141,6 +141,12 @@ config file until reverted. Changes apply immediately (no restart).
   "status":     {"source": "ui",   "value": {"degraded_loss_pct": 2, "degraded_http_success_pct": 99}, "file": {...}},
   "alerts":     {"source": "file", "value": {"rules": [...], "cooldown_ms": 1800000, "clear_ratio": 0.7}, "file": {...}},
   "dns_probes": {"source": "file", "value": [{"name": "home-resolver", "server": "192.168.1.1:53", "query": "example.com", "record": "A"}], "file": [...]},
+  "maintenance_windows": {"source": "ui", "value": [{"name": "nightly", "days": ["mon"], "start": "02:00", "end": "03:00", "timezone": "UTC"}], "file": [...]},
+  "notify":     {"source": "ui", "value": {"webhook": {"url": "********", "preset": "discord"}, "email": null, "outbox_max_age_ms": 86400000}, "file": {...}},
+  "heartbeat":  {"source": "file", "value": {"url": "", "interval_ms": 300000}, "file": {...}},
+  "retention":  {"source": "file", "value": {"raw_retention_ms": 604800000, "rollup_1m_retention_ms": 7776000000, "rollup_1h_retention_ms": 0}, "file": {...}},
+  "enrich":     {"source": "file", "value": {"reverse_dns": true}, "file": {...}},
+  "notify_env_prefix": "PATHWATCH_NOTIFY_",
   "channels": {"webhook": true, "email": false},
   "rule_types": ["cert_expiry", "dns_failure", ...],
   "max_retries": 10
@@ -153,11 +159,30 @@ restores. Value shapes:
   `path_rediscovery_ms`, `max_hops`, `retries` (0 = built-in default, except `retries`).
 - `alerts.rules[]`: `name`, `type`, `enabled`, `notify`, and the parameters of the type:
   `consecutive`, `metric`, `multiplier`, `min_delta_ms`, `sustain_ms`, `baseline_window_ms`,
-  `min_baseline_ms`, `threshold_pct`, `window_ms`, `warn_before_ms`. Channels, maintenance
-  windows, the heartbeat and the outbox stay in the config file.
+  `min_baseline_ms`, `threshold_pct`, `window_ms`, `warn_before_ms`.
 - `dns_probes[]`: `name`, `server`, `query`, `record`, `interval_ms`, `timeout_ms`, `retries`.
+- `maintenance_windows[]`: `name`, `days` (`mon`..`sun`), `start` and `end` (`HH:MM`; an end at
+  or before the start crosses midnight), `timezone` (IANA name, default UTC).
+- `notify`: `webhook` and `email` (`null` = channel off) and `outbox_max_age_ms`.
+  `webhook`: `url` or `url_env`, `preset` (`generic`, `discord`, `slack`, `ntfy`), `headers`,
+  `body_template`. `email`: `smtp_host`, `smtp_port`, `tls` (`starttls`, `tls`, `none`), `from`,
+  `to[]`, and either `username`/`password` or `username_env`/`password_env`.
+  Secrets are never returned: a literal webhook URL, literal header values and the SMTP password
+  come back as `"********"`. Sending `"********"` back keeps the saved value, but only while the
+  channel delivers to the same place (same webhook URL or variable; same SMTP host and port);
+  otherwise the request fails and the secret must be entered again. Environment references
+  (`url_env`, `username_env`, `password_env`, `${NAME}` in header values) must start with
+  `PATHWATCH_NOTIFY_`, except the ones the config file already uses for the same destination.
+- `heartbeat`: `url` (empty = off), `interval_ms`.
+- `retention`: `raw_retention_ms` (at least 1h), `rollup_1m_retention_ms`,
+  `rollup_1h_retention_ms`; 0 keeps data forever. A shorter period deletes older data at the next
+  hourly cleanup.
+- `enrich`: `reverse_dns`.
 
-`PUT /api/settings/{defaults|status|alerts|dns_probes}` with the section's value → 200 and the
+Server paths and process settings (`listen`, `public_url`, `auth`, `tls`, `log`, `storage.path`,
+`probing.icmp_mode`, `enrich.asn_db`) are only set in the config file.
+
+`PUT /api/settings/{section}` with the section's value → 200 and the
 full settings (as `GET`). 400 with every validation problem (for example a rule a target still
 refers to, or more than 50 DNS probes). Unknown fields are rejected.
 

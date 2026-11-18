@@ -30,10 +30,23 @@ func (j retainJob) deleteSQL() string {
 	return fmt.Sprintf(`DELETE FROM %[1]s WHERE (%[3]s) IN (SELECT %[3]s FROM %[1]s WHERE %[2]s=? AND %[4]s<? LIMIT %[5]d)`, j.table, j.key, j.pk, j.col, retainChunk)
 }
 
+// Retention holds the retention periods; 0 keeps data forever.
+type Retention struct {
+	Raw, Rollup1m, Rollup1h time.Duration
+}
+
+// SetRetention changes the retention periods. The next retention run applies them (shorter
+// periods delete the data that is now too old).
+func (s *Store) SetRetention(r Retention) { s.ret.Store(&r) }
+
+// Retention returns the current retention periods.
+func (s *Store) Retention() Retention { return *s.ret.Load() }
+
 // retainJobs lists the tables to expire for the configured retention periods.
 func (s *Store) retainJobs(now time.Time) []retainJob {
 	var jobs []retainJob
-	if d := s.opts.RawRetention; d > 0 {
+	r := s.Retention()
+	if d := r.Raw; d > 0 {
 		c := now.Add(-d)
 		jobs = append(jobs,
 			retainJob{"icmp_rounds", "target_id", "target_id, ts", "ts", c},
@@ -41,13 +54,13 @@ func (s *Store) retainJobs(now time.Time) []retainJob {
 			retainJob{"tcp_samples", "probe_id", "probe_id, ts", "ts", c},
 			retainJob{"dns_samples", "probe_id", "probe_id, ts", "ts", c})
 	}
-	if d := s.opts.Rollup1mRetention; d > 0 {
+	if d := r.Rollup1m; d > 0 {
 		c := now.Add(-d)
 		jobs = append(jobs,
 			retainJob{"icmp_rollup_1m", "target_id", "target_id, bucket, ttl, path_id", "bucket", c},
 			retainJob{"probe_rollup_1m", "probe_id", "probe_id, bucket", "bucket", c})
 	}
-	if d := s.opts.Rollup1hRetention; d > 0 {
+	if d := r.Rollup1h; d > 0 {
 		c := now.Add(-d)
 		jobs = append(jobs,
 			retainJob{"icmp_rollup_1h", "target_id", "target_id, bucket, ttl, path_id", "bucket", c},
@@ -61,7 +74,7 @@ func (s *Store) retainJobs(now time.Time) []retainJob {
 // chunks once ctx is cancelled.
 func (s *Store) Retain(ctx context.Context) error {
 	now := s.now()
-	if d := s.opts.Rollup1mRetention; d > 0 {
+	if d := s.Retention().Rollup1m; d > 0 {
 		// annotations follow the 1m retention
 		c := now.Add(-d)
 		if _, err := s.deleteWhere(ctx, `DELETE FROM events WHERE COALESCE(ended_at, started_at) < ? AND (ended_at IS NOT NULL OR kind = 'route_change')`, us(c)); err != nil {

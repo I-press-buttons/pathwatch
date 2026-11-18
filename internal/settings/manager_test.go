@@ -488,3 +488,109 @@ func TestDNSProbeLimit(t *testing.T) {
 		t.Error("file with too many DNS probes accepted")
 	}
 }
+
+type fakeRDNS struct{ on atomic.Bool }
+
+func (f *fakeRDNS) SetReverseDNS(on bool) { f.on.Store(on) }
+
+func TestNotifyMaintenanceHeartbeatRetentionEnrich(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "n.db")
+	e := open(t, path, fileYAML)
+	rd := &fakeRDNS{}
+	e.m.SetEnricher(rd)
+	if !rd.on.Load() {
+		t.Error("reverse DNS should start on (the default)")
+	}
+
+	mw := []config.MaintenanceWindow{{Name: " nightly ", Days: []string{"mon", "tue"}, Start: "02:00", End: "03:30", Timezone: "UTC"}}
+	if err := e.m.SetMaintenanceWindows(&mw); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.eng.last.Load().Alerts.MaintenanceWindows; len(got) != 1 || got[0].Name != "nightly" {
+		t.Errorf("maintenance windows not applied: %+v", got)
+	}
+	bad := []config.MaintenanceWindow{{Name: "x", Days: []string{"mon"}, Start: "25:00", End: "03:00"}}
+	if err := e.m.SetMaintenanceWindows(&bad); !errors.Is(err, ErrInvalid) {
+		t.Errorf("bad window: %v", err)
+	}
+
+	n := config.NotifySettings{
+		Webhook: &config.WebhookConfig{URL: "https://hooks.example/secret", Preset: "discord", Headers: map[string]string{"X-Key": "k1"}},
+		Email:   &config.EmailConfig{SMTPHost: "smtp.example", SMTPPort: 587, TLS: "starttls", Username: "me", Password: "pw", From: "a@example.com", To: []string{"b@example.com"}},
+	}
+	if err := e.m.SetNotify(&n); err != nil {
+		t.Fatal(err)
+	}
+	// the UI sends back the redacted form after an unrelated change: secrets are kept
+	red := config.RedactNotify(e.m.Effective().Alerts.NotifySettings())
+	red.Email.To = []string{"c@example.com"}
+	if err := e.m.SetNotify(&red); err != nil {
+		t.Fatal(err)
+	}
+	got := e.eng.last.Load().Alerts.Notify
+	if got.Webhook.URL != "https://hooks.example/secret" || got.Webhook.Headers["X-Key"] != "k1" || got.Email.Password != "pw" || got.Email.To[0] != "c@example.com" {
+		t.Errorf("notify: %+v %+v", got.Webhook, got.Email)
+	}
+	steal := config.RedactNotify(e.m.Effective().Alerts.NotifySettings())
+	steal.Email.SMTPHost = "attacker.example"
+	if err := e.m.SetNotify(&steal); !errors.Is(err, ErrInvalid) {
+		t.Errorf("stored password redirected to a new server: %v", err)
+	}
+	leak := config.NotifySettings{Webhook: &config.WebhookConfig{URL: "https://attacker.example/", Headers: map[string]string{"X": "${PATHWATCH_PASSWORD}"}}}
+	if err := e.m.SetNotify(&leak); !errors.Is(err, ErrInvalid) {
+		t.Errorf("env reference outside the prefix accepted: %v", err)
+	}
+
+	hb := config.HeartbeatConfig{URL: " https://hc.example/ping ", Interval: config.Duration(time.Minute)}
+	if err := e.m.SetHeartbeat(&hb); err != nil {
+		t.Fatal(err)
+	}
+	if e.eng.last.Load().Alerts.Heartbeat.URL != "https://hc.example/ping" {
+		t.Errorf("heartbeat: %+v", e.eng.last.Load().Alerts.Heartbeat)
+	}
+
+	if err := e.m.SetRetention(&config.RetentionSettings{Raw: config.Duration(48 * time.Hour), Rollup1m: config.Duration(30 * 24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if r := e.st.Retention(); r.Raw != 48*time.Hour || r.Rollup1m != 30*24*time.Hour || r.Rollup1h != 0 {
+		t.Errorf("store retention: %+v", r)
+	}
+	if err := e.m.SetEnrich(&config.EnrichSettings{ReverseDNS: false}); err != nil {
+		t.Fatal(err)
+	}
+	if rd.on.Load() {
+		t.Error("reverse DNS still on")
+	}
+	e.close()
+
+	// everything survives a restart
+	e2 := open(t, path, fileYAML)
+	rd2 := &fakeRDNS{}
+	rd2.on.Store(true)
+	e2.m.SetEnricher(rd2)
+	eff := e2.m.Effective()
+	if len(eff.Alerts.MaintenanceWindows) != 1 || eff.Alerts.Notify.Email.Password != "pw" || eff.Alerts.Heartbeat.Interval.D() != time.Minute || rd2.on.Load() || e2.st.Retention().Raw != 48*time.Hour {
+		t.Errorf("not restored: %+v", eff.Alerts)
+	}
+	// and reverts to the file
+	for _, f := range []func() error{
+		func() error { return e2.m.SetMaintenanceWindows(nil) },
+		func() error { return e2.m.SetNotify(nil) },
+		func() error { return e2.m.SetHeartbeat(nil) },
+		func() error { return e2.m.SetRetention(nil) },
+		func() error { return e2.m.SetEnrich(nil) },
+	} {
+		if err := f(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	eff = e2.m.Effective()
+	if len(eff.Alerts.MaintenanceWindows) != 0 || eff.Alerts.Notify.Webhook != nil || eff.Alerts.Heartbeat.URL != "" || !rd2.on.Load() || e2.st.Retention().Raw != 7*24*time.Hour {
+		t.Errorf("not reverted: %+v %+v", eff.Alerts, e2.st.Retention())
+	}
+	ov := e2.m.Overrides()
+	if ov.Maintenance != nil || ov.Notify != nil || ov.Heartbeat != nil || ov.Retention != nil || ov.Enrich != nil {
+		t.Errorf("overrides left: %+v", ov)
+	}
+	e2.close()
+}

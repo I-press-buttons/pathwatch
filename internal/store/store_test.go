@@ -529,7 +529,9 @@ func TestRetention(t *testing.T) {
 		t.Errorf("1m rows = %d, want the old and the recent buckets", m1)
 	}
 	// with a shorter 1m retention the old rollups go too
-	s.opts.Rollup1mRetention = 24 * time.Hour
+	r := s.Retention()
+	r.Rollup1m = 24 * time.Hour
+	s.SetRetention(r)
 	if err := s.Retain(context.Background()); err != nil {
 		t.Fatal(err)
 	}

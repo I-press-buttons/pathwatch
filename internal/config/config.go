@@ -104,6 +104,30 @@ type StorageConfig struct {
 	Rollup1hRetention *Duration `yaml:"rollup_1h_retention"`
 }
 
+// RetentionSettings are the retention periods as the web UI edits them; 0 keeps data forever.
+type RetentionSettings struct {
+	Raw      Duration `json:"raw_retention_ms"`
+	Rollup1m Duration `json:"rollup_1m_retention_ms"`
+	Rollup1h Duration `json:"rollup_1h_retention_ms"`
+}
+
+// RetentionSettings returns the retention periods (the config must have its defaults applied).
+func (s StorageConfig) RetentionSettings() RetentionSettings {
+	return RetentionSettings{Raw: s.RawRetention.orZero(), Rollup1m: s.Rollup1mRetention.orZero(), Rollup1h: s.Rollup1hRetention.orZero()}
+}
+
+func (d *Duration) orZero() Duration {
+	if d == nil {
+		return 0
+	}
+	return *d
+}
+
+// EnrichSettings is the part of the enrich section the web UI edits.
+type EnrichSettings struct {
+	ReverseDNS bool `json:"reverse_dns"`
+}
+
 // ProbingConfig holds platform prober options.
 type ProbingConfig struct {
 	ICMPMode string `yaml:"icmp_mode"`

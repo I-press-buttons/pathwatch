@@ -160,9 +160,10 @@ func (s *Server) handleSilences(w http.ResponseWriter, r *http.Request) {
 	for _, x := range sils {
 		out = append(out, silenceObject(x))
 	}
-	// Active maintenance windows from the config, with negative ids (they cannot be deleted).
-	for i, w := range s.maint {
-		for _, act := range s.maint[i : i+1].Active(now) {
+	// Active maintenance windows (config file or Settings), with negative ids (they are not silences).
+	maint := s.maintenance()
+	for i, w := range maint {
+		for _, act := range maint[i : i+1].Active(now) {
 			out = append(out, map[string]any{"id": -int64(i + 1), "target_id": nil, "rule": nil,
 				"starts_at": act.Start.UnixMilli(), "ends_at": act.End.UnixMilli(), "reason": w.Name, "source": "maintenance"})
 		}
@@ -264,7 +265,7 @@ func (s *Server) handleDeleteSilence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if id < 0 {
-		writeError(w, http.StatusBadRequest, "maintenance windows are defined in the config file")
+		writeError(w, http.StatusBadRequest, "maintenance windows are edited under Settings → Maintenance windows")
 		return
 	}
 	if err := s.d.Store.DeleteSilence(id); err != nil {

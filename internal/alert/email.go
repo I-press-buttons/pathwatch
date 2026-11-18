@@ -189,10 +189,16 @@ func (e *EmailSender) Send(ctx context.Context, n Notification) error {
 			return fmt.Errorf("smtp starttls: %w", err)
 		}
 	}
-	user := e.getenv(e.cfg.UsernameEnv)
-	if e.cfg.UsernameEnv != "" && user != "" {
+	user, pass := e.cfg.Username, e.cfg.Password
+	if e.cfg.UsernameEnv != "" {
+		user = e.getenv(e.cfg.UsernameEnv)
+	}
+	if e.cfg.PasswordEnv != "" {
+		pass = e.getenv(e.cfg.PasswordEnv)
+	}
+	if user != "" {
 		if ok, _ := c.Extension("AUTH"); ok {
-			if err := c.Auth(plainAuth{user, e.getenv(e.cfg.PasswordEnv)}); err != nil {
+			if err := c.Auth(plainAuth{user, pass}); err != nil {
 				return fmt.Errorf("smtp auth: %w", err)
 			}
 		}

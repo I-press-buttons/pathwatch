@@ -3,7 +3,7 @@ import { h, clear, isNum, fmtMs, fmtPct, DASH } from '../util.js';
 import { api } from '../api.js';
 import { panel, sparkline } from '../ui.js';
 
-export function dnsPanel({ title = 'DNS probes', range }) {
+export function dnsPanel({ title = 'DNS probes', range, emptyHint }) {
   const p = panel(title);
   let seq = 0;
   p.showLoading('Loading DNS probes…');
@@ -14,7 +14,7 @@ export function dnsPanel({ title = 'DNS probes', range }) {
       if (my !== seq) return;
       p.clearStale();
       if (!data || !data.length) {
-        p.showEmpty('No DNS probes configured.', 'Add dns_probes to the config file to monitor a resolver such as your router or Pi-hole.');
+        p.showEmpty('No DNS probes configured.', emptyHint || ['Add one under ', h('a', { href: '#/settings' }, 'Settings → DNS probe setup'), ' to monitor a resolver such as your router or Pi-hole.']);
         return;
       }
       const grid = h('div', { class: 'dns-grid' });

@@ -291,8 +291,15 @@ func (c *Config) validateAlerts() []error {
 				add("alerts.notify.webhook.headers: invalid header name %q", k)
 			}
 		}
-		if w.URLEnv == "" {
+		switch {
+		case w.URLEnv == "" && w.URL == "":
 			add("alerts.notify.webhook.url_env is required (webhook URLs are secrets and come from the environment)")
+		case w.URLEnv != "" && w.URL != "":
+			add("alerts.notify.webhook: set the URL or the environment variable holding it, not both")
+		case w.URL != "":
+			if u, err := url.Parse(w.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				add("alerts.notify.webhook: the URL must be an http(s) URL")
+			}
 		}
 	}
 	if e := a.Notify.Email; e != nil {
@@ -306,6 +313,12 @@ func (c *Config) validateAlerts() []error {
 		}
 		if e.SMTPPort < 0 || e.SMTPPort > 65535 {
 			add("alerts.notify.email.smtp_port out of range")
+		}
+		if e.Username != "" && e.UsernameEnv != "" {
+			add("alerts.notify.email: set the username or the environment variable holding it, not both")
+		}
+		if e.Password != "" && e.PasswordEnv != "" {
+			add("alerts.notify.email: set the password or the environment variable holding it, not both")
 		}
 	}
 	return errs

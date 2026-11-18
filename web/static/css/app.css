@@ -394,3 +394,45 @@ dialog .actions.sticky { position: sticky; bottom: 0; background: var(--surface)
 .form-error { white-space: pre-line; }
 .form-error ul { margin: 0; padding-left: 18px; white-space: normal; }
 .noscript-note { padding: 16px; }
+
+/* ---------- export controls and the printable report ---------- */
+.export-bar { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.report { max-width: 1100px; margin: 0 auto; }
+.report-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
+.report-tools .grow { flex: 1; }
+.report-head { margin-bottom: 14px; }
+.report-head h1 { font-size: 22px; margin: 0 0 2px; font-weight: 650; }
+.report-section { margin-bottom: 20px; }
+.report-section h2 { font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-muted); border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+.cards.metrics { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.card.metric { padding: 8px 12px; }
+.card.metric .label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .4px; }
+.card.metric .value { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.card.metric .value.crit { color: var(--crit); }
+.card.metric .value.warn { color: var(--warn); }
+.report-table td { white-space: normal; vertical-align: top; }
+.report-table .wrap, .report .wrap { overflow-wrap: anywhere; }
+
+@media print {
+  /* Always a light, ink-friendly page, whatever theme the screen uses. */
+  html:root:root[data-theme] {
+    color-scheme: light;
+    --bg: #ffffff; --surface: #ffffff; --surface-2: #f2f2f2; --border: #c4c4c4; --border-strong: #888888;
+    --text: #000000; --text-muted: #333333; --text-faint: #555555;
+    --accent: #0a58bd; --ok: #116a37; --warn: #85540a; --crit: #b3261e; --info: #0a58bd;
+  }
+  body { background: #fff; color: #000; font-size: 11pt; overflow: visible; }
+  .topbar, .banner, .skip-link, .no-print, noscript, dialog { display: none !important; }
+  .view { max-width: none; padding: 0; }
+  .report { max-width: none; }
+  a { color: inherit; text-decoration: none; }
+  .card, .panel { box-shadow: none; }
+  .report-section { break-inside: auto; }
+  .report-section h2 { break-after: avoid; }
+  .card.metric { break-inside: avoid; }
+  .table-scroll { overflow: visible; }
+  table.grid { break-inside: auto; }
+  table.grid thead { display: table-header-group; }
+  table.grid tr { break-inside: avoid; break-after: auto; }
+  .pill { border: 1px solid #888; background: none; color: #000; }
+}

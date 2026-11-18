@@ -771,3 +771,13 @@ func (s *Store) LastProbeSample(probeID int64, typ string) (time.Time, bool) {
 	}
 	return fromUs(v.Int64), true
 }
+
+// LastHTTPStatus returns the HTTP status code of the newest sample of an HTTP probe that got a
+// response (one index lookup on (probe_id, ts)); ok is false when there is none.
+func (s *Store) LastHTTPStatus(probeID int64) (int, bool) {
+	var v sql.NullInt64
+	if err := s.rdb.QueryRow(`SELECT status FROM http_samples WHERE probe_id=? AND status IS NOT NULL AND status>0 ORDER BY ts DESC LIMIT 1`, probeID).Scan(&v); err != nil || !v.Valid {
+		return 0, false
+	}
+	return int(v.Int64), true
+}

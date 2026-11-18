@@ -23,8 +23,8 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # Latest 1.26 patch (same spec as release.yml), not the go.mod minimum.
-          go-version: '1.26.x'
+          # Latest 1.27 patch (same spec as release.yml), not the go.mod minimum.
+          go-version: '1.27.x'
           check-latest: true
 
       - name: gofmt
@@ -61,8 +61,8 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # Latest 1.26 patch (same spec as release.yml), not the go.mod minimum.
-          go-version: '1.26.x'
+          # Latest 1.27 patch (same spec as release.yml), not the go.mod minimum.
+          go-version: '1.27.x'
           check-latest: true
 
       - name: Cross-build
@@ -82,7 +82,7 @@ jobs:
         with:
           # Must match the toolchain spec of release.yml; the action default is
           # "stable", which could be a different minor release.
-          go-version-input: '1.26.x'
+          go-version-input: '1.27.x'
           check-latest: true
 
   actions-pinned:

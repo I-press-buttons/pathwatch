@@ -178,6 +178,17 @@ func (s *Store) LatestPath(targetID int64) (PathRow, error) {
 	return p, err
 }
 
+// MaxHopTTL returns the highest TTL that any path version of the target has a responder
+// recorded for (0 when there is none). The export uses it to size a request before loading it.
+func (s *Store) MaxHopTTL(targetID int64) (int, error) {
+	var v sql.NullInt64
+	err := s.rdb.QueryRow(`SELECT MAX(ttl) FROM path_hops WHERE path_id IN (SELECT id FROM paths WHERE target_id=?)`, targetID).Scan(&v)
+	if err != nil {
+		return 0, err
+	}
+	return int(v.Int64), nil
+}
+
 // LastRoundTime returns the timestamp of the newest stored round of a target.
 func (s *Store) LastRoundTime(targetID int64) (time.Time, bool) {
 	var v sql.NullInt64
@@ -431,6 +442,41 @@ func (s *Store) Deliveries(alertIDs []int64) (map[int64][]Delivery, error) {
 			d.LastError = &le.String
 		}
 		out[d.AlertID] = append(out[d.AlertID], d)
+	}
+	return out, rows.Err()
+}
+
+// ChannelDelivery is the newest notification of one channel and how its delivery went.
+type ChannelDelivery struct {
+	AlertID   int64
+	Status    string // queued | delivered | retrying | failed | expired
+	Attempts  int
+	At        time.Time // delivered_at when delivered, otherwise when it was queued
+	LastError *string
+}
+
+// LastDeliveries returns the newest outbox row of every channel that has one.
+func (s *Store) LastDeliveries() (map[string]ChannelDelivery, error) {
+	rows, err := s.rdb.Query(`SELECT channel, alert_id, status, attempts, COALESCE(delivered_at, created_at), last_error
+		FROM outbox WHERE id IN (SELECT MAX(id) FROM outbox GROUP BY channel)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]ChannelDelivery{}
+	for rows.Next() {
+		var ch string
+		var d ChannelDelivery
+		var at int64
+		var le sql.NullString
+		if err := rows.Scan(&ch, &d.AlertID, &d.Status, &d.Attempts, &at, &le); err != nil {
+			return nil, err
+		}
+		d.At = fromUs(at)
+		if le.Valid {
+			d.LastError = &le.String
+		}
+		out[ch] = d
 	}
 	return out, rows.Err()
 }

@@ -572,7 +572,8 @@ func (s *Scheduler) Uptime() time.Duration {
 }
 
 // pickAddr chooses the destination to pin: keep the current one while the resolver still returns
-// it (stable pins for round-robin DNS), otherwise the first IPv4, otherwise the first address.
+// it (stable pins for round-robin DNS), otherwise the first IPv4 (kept preferred: it is the most widely reachable family and keeps existing
+// pins unchanged; IPv6 is traced when it is the only family or a literal), otherwise the first address.
 func pickAddr(addrs []netip.Addr, current netip.Addr) netip.Addr {
 	for i := range addrs {
 		addrs[i] = addrs[i].Unmap()

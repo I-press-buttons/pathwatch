@@ -1,0 +1,178 @@
+# HELP pathwatch_build_info Build information; the value is always 1.
+# TYPE pathwatch_build_info gauge
+pathwatch_build_info{version="1.2.3"} 1
+# HELP pathwatch_target_up 1 if the target's destination answered in the last 5 minutes, 0 if everything was lost. Absent without data.
+# TYPE pathwatch_target_up gauge
+pathwatch_target_up{target="change",host="change.example"} 1
+pathwatch_target_up{target="silent-tcp",host="silent-tcp.example"} 1
+pathwatch_target_up{target="late",host="late.example"} 1
+pathwatch_target_up{target="dark",host="dark.example"} 0
+pathwatch_target_up{target="http-only",host="http-only.example"} 1
+# HELP pathwatch_target_paused 1 if monitoring of the target is paused.
+# TYPE pathwatch_target_paused gauge
+pathwatch_target_paused{target="change",host="change.example"} 0
+pathwatch_target_paused{target="silent",host="silent.example"} 0
+pathwatch_target_paused{target="silent-tcp",host="silent-tcp.example"} 0
+pathwatch_target_paused{target="late",host="late.example"} 0
+pathwatch_target_paused{target="dark",host="dark.example"} 0
+pathwatch_target_paused{target="dark-change",host="dark-change.example"} 0
+pathwatch_target_paused{target="http-only",host="http-only.example"} 0
+pathwatch_target_paused{target="empty",host="empty.example"} 0
+# HELP pathwatch_target_loss_ratio Destination loss ratio (0..1) over the last 5 minutes.
+# TYPE pathwatch_target_loss_ratio gauge
+pathwatch_target_loss_ratio{target="change",host="change.example"} 0.08333333333333334
+pathwatch_target_loss_ratio{target="silent-tcp",host="silent-tcp.example"} 0.16666666666666669
+pathwatch_target_loss_ratio{target="late",host="late.example"} 0.11666666666666665
+pathwatch_target_loss_ratio{target="dark",host="dark.example"} 1
+pathwatch_target_loss_ratio{target="http-only",host="http-only.example"} 0.125
+# HELP pathwatch_target_rtt_avg_seconds Mean destination round-trip time over the last 5 minutes.
+# TYPE pathwatch_target_rtt_avg_seconds gauge
+pathwatch_target_rtt_avg_seconds{target="change",host="change.example"} 0.008021200000000001
+pathwatch_target_rtt_avg_seconds{target="silent",host="silent.example"} 0.003959295652173913
+pathwatch_target_rtt_avg_seconds{target="silent-tcp",host="silent-tcp.example"} 0.0195
+pathwatch_target_rtt_avg_seconds{target="late",host="late.example"} 0.005995896226415093
+pathwatch_target_rtt_avg_seconds{target="dark-change",host="dark-change.example"} 0.003992517857142858
+pathwatch_target_rtt_avg_seconds{target="http-only",host="http-only.example"} 0.09428571428571429
+# HELP pathwatch_target_rtt_min_seconds Minimum destination round-trip time over the last 5 minutes.
+# TYPE pathwatch_target_rtt_min_seconds gauge
+pathwatch_target_rtt_min_seconds{target="change",host="change.example"} 0.005607
+pathwatch_target_rtt_min_seconds{target="silent",host="silent.example"} 0.002851
+pathwatch_target_rtt_min_seconds{target="silent-tcp",host="silent-tcp.example"} 0.015
+pathwatch_target_rtt_min_seconds{target="late",host="late.example"} 0.004259000000000001
+pathwatch_target_rtt_min_seconds{target="dark-change",host="dark-change.example"} 0.002805
+pathwatch_target_rtt_min_seconds{target="http-only",host="http-only.example"} 0.076
+# HELP pathwatch_target_rtt_max_seconds Maximum destination round-trip time over the last 5 minutes.
+# TYPE pathwatch_target_rtt_max_seconds gauge
+pathwatch_target_rtt_max_seconds{target="change",host="change.example"} 0.010376
+pathwatch_target_rtt_max_seconds{target="silent",host="silent.example"} 0.005157
+pathwatch_target_rtt_max_seconds{target="silent-tcp",host="silent-tcp.example"} 0.024
+pathwatch_target_rtt_max_seconds{target="late",host="late.example"} 0.007762
+pathwatch_target_rtt_max_seconds{target="dark-change",host="dark-change.example"} 0.005188
+pathwatch_target_rtt_max_seconds{target="http-only",host="http-only.example"} 0.127
+# HELP pathwatch_target_rtt_p95_seconds 95th percentile destination round-trip time over the last 5 minutes.
+# TYPE pathwatch_target_rtt_p95_seconds gauge
+pathwatch_target_rtt_p95_seconds{target="change",host="change.example"} 0.010376
+pathwatch_target_rtt_p95_seconds{target="silent",host="silent.example"} 0.004904698510947546
+pathwatch_target_rtt_p95_seconds{target="silent-tcp",host="silent-tcp.example"} 0.024
+pathwatch_target_rtt_p95_seconds{target="late",host="late.example"} 0.007762
+pathwatch_target_rtt_p95_seconds{target="dark-change",host="dark-change.example"} 0.004904698510947546
+pathwatch_target_rtt_p95_seconds{target="http-only",host="http-only.example"} 0.12428251901493974
+# HELP pathwatch_target_jitter_seconds Mean absolute difference of consecutive destination replies over the last 5 minutes.
+# TYPE pathwatch_target_jitter_seconds gauge
+pathwatch_target_jitter_seconds{target="change",host="change.example"} 0.0017429671625544267
+pathwatch_target_jitter_seconds{target="silent",host="silent.example"} 0.0007192898859450584
+pathwatch_target_jitter_seconds{target="late",host="late.example"} 0.0011028917356572258
+pathwatch_target_jitter_seconds{target="dark-change",host="dark-change.example"} 0.0008317019767783657
+# HELP pathwatch_target_mos Estimated MOS (1..4.5) from latency, jitter and loss over the last 5 minutes.
+# TYPE pathwatch_target_mos gauge
+pathwatch_target_mos{target="change",host="change.example"} 3.6815659039898043
+pathwatch_target_mos{target="silent",host="silent.example"} 4.111341170538861
+pathwatch_target_mos{target="silent-tcp",host="silent-tcp.example"} 2.616822056257451
+pathwatch_target_mos{target="late",host="late.example"} 3.2832421884818435
+pathwatch_target_mos{target="dark",host="dark.example"} 1
+pathwatch_target_mos{target="dark-change",host="dark-change.example"} 3.870231724389032
+pathwatch_target_mos{target="http-only",host="http-only.example"} 3.0659015293061223
+# HELP pathwatch_target_hops Number of hops of the current path.
+# TYPE pathwatch_target_hops gauge
+pathwatch_target_hops{target="change",host="change.example"} 4
+pathwatch_target_hops{target="silent",host="silent.example"} 2
+pathwatch_target_hops{target="silent-tcp",host="silent-tcp.example"} 3
+pathwatch_target_hops{target="late",host="late.example"} 3
+pathwatch_target_hops{target="dark",host="dark.example"} 4
+pathwatch_target_hops{target="dark-change",host="dark-change.example"} 2
+# HELP pathwatch_hop_loss_ratio Loss ratio (0..1) of the hop at this TTL over the last 5 minutes.
+# TYPE pathwatch_hop_loss_ratio gauge
+pathwatch_hop_loss_ratio{target="change",ttl="1"} 0.05833333333333333
+pathwatch_hop_loss_ratio{target="change",ttl="2"} 0.06666666666666667
+pathwatch_hop_loss_ratio{target="change",ttl="3"} 0.06666666666666667
+pathwatch_hop_loss_ratio{target="change",ttl="4"} 0.08333333333333334
+pathwatch_hop_loss_ratio{target="silent",ttl="1"} 0.10833333333333334
+pathwatch_hop_loss_ratio{target="silent",ttl="2"} 0.04166666666666667
+pathwatch_hop_loss_ratio{target="silent-tcp",ttl="1"} 0.10833333333333334
+pathwatch_hop_loss_ratio{target="silent-tcp",ttl="2"} 0.06666666666666667
+pathwatch_hop_loss_ratio{target="silent-tcp",ttl="3"} 0.08333333333333334
+pathwatch_hop_loss_ratio{target="late",ttl="1"} 0.03333333333333333
+pathwatch_hop_loss_ratio{target="late",ttl="2"} 0.04166666666666667
+pathwatch_hop_loss_ratio{target="late",ttl="3"} 0.11666666666666665
+pathwatch_hop_loss_ratio{target="dark",ttl="1"} 0.08333333333333334
+pathwatch_hop_loss_ratio{target="dark",ttl="2"} 0.10833333333333334
+pathwatch_hop_loss_ratio{target="dark",ttl="3"} 0.075
+pathwatch_hop_loss_ratio{target="dark",ttl="4"} 1
+pathwatch_hop_loss_ratio{target="dark-change",ttl="1"} 0.08333333333333334
+pathwatch_hop_loss_ratio{target="dark-change",ttl="2"} 0.06666666666666667
+# HELP pathwatch_hop_rtt_avg_seconds Mean round-trip time of the hop at this TTL over the last 5 minutes.
+# TYPE pathwatch_hop_rtt_avg_seconds gauge
+pathwatch_hop_rtt_avg_seconds{target="change",ttl="1"} 0.001986734513274336
+pathwatch_hop_rtt_avg_seconds{target="change",ttl="2"} 0.0040048660714285715
+pathwatch_hop_rtt_avg_seconds{target="change",ttl="3"} 0.005968303571428571
+pathwatch_hop_rtt_avg_seconds{target="change",ttl="4"} 0.008021200000000001
+pathwatch_hop_rtt_avg_seconds{target="silent",ttl="1"} 0.0019777943925233647
+pathwatch_hop_rtt_avg_seconds{target="silent",ttl="2"} 0.003959295652173913
+pathwatch_hop_rtt_avg_seconds{target="silent-tcp",ttl="1"} 0.0020484859813084113
+pathwatch_hop_rtt_avg_seconds{target="silent-tcp",ttl="2"} 0.003908205357142857
+pathwatch_hop_rtt_avg_seconds{target="silent-tcp",ttl="3"} 0.0060383727272727275
+pathwatch_hop_rtt_avg_seconds{target="late",ttl="1"} 0.0019679568965517242
+pathwatch_hop_rtt_avg_seconds{target="late",ttl="2"} 0.0040924
+pathwatch_hop_rtt_avg_seconds{target="late",ttl="3"} 0.005995896226415093
+pathwatch_hop_rtt_avg_seconds{target="dark",ttl="1"} 0.001998890909090909
+pathwatch_hop_rtt_avg_seconds{target="dark",ttl="2"} 0.004128859813084112
+pathwatch_hop_rtt_avg_seconds{target="dark",ttl="3"} 0.006043234234234234
+pathwatch_hop_rtt_avg_seconds{target="dark-change",ttl="1"} 0.0020253272727272726
+pathwatch_hop_rtt_avg_seconds{target="dark-change",ttl="2"} 0.003992517857142858
+# HELP pathwatch_probe_total_seconds Mean total time of successful probe samples over the last 5 minutes.
+# TYPE pathwatch_probe_total_seconds gauge
+pathwatch_probe_total_seconds{target="change",probe="http",type="http"} 0.10657142857142857
+pathwatch_probe_total_seconds{target="change",probe="tcp",type="tcp"} 0.019
+pathwatch_probe_total_seconds{target="silent",probe="http",type="http"} 0.10685714285714286
+pathwatch_probe_total_seconds{target="silent-tcp",probe="tcp",type="tcp"} 0.0195
+pathwatch_probe_total_seconds{target="http-only",probe="http",type="http"} 0.09428571428571429
+# HELP pathwatch_probe_dns_seconds Mean DNS lookup time of successful HTTP probe samples.
+# TYPE pathwatch_probe_dns_seconds gauge
+pathwatch_probe_dns_seconds{target="change",probe="http",type="http"} 0.001
+pathwatch_probe_dns_seconds{target="silent",probe="http",type="http"} 0.001
+pathwatch_probe_dns_seconds{target="http-only",probe="http",type="http"} 0.001
+# HELP pathwatch_probe_connect_seconds Mean connect time of successful probe samples.
+# TYPE pathwatch_probe_connect_seconds gauge
+pathwatch_probe_connect_seconds{target="change",probe="http",type="http"} 0.01
+pathwatch_probe_connect_seconds{target="change",probe="tcp",type="tcp"} 0.019
+pathwatch_probe_connect_seconds{target="silent",probe="http",type="http"} 0.01
+pathwatch_probe_connect_seconds{target="silent-tcp",probe="tcp",type="tcp"} 0.0195
+pathwatch_probe_connect_seconds{target="http-only",probe="http",type="http"} 0.01
+# HELP pathwatch_probe_tls_seconds Mean TLS handshake time of successful HTTP probe samples.
+# TYPE pathwatch_probe_tls_seconds gauge
+pathwatch_probe_tls_seconds{target="change",probe="http",type="http"} 0.02
+pathwatch_probe_tls_seconds{target="silent",probe="http",type="http"} 0.02
+pathwatch_probe_tls_seconds{target="http-only",probe="http",type="http"} 0.02
+# HELP pathwatch_probe_ttfb_seconds Mean time to first byte of successful HTTP probe samples.
+# TYPE pathwatch_probe_ttfb_seconds gauge
+pathwatch_probe_ttfb_seconds{target="change",probe="http",type="http"} 0.07057142857142856
+pathwatch_probe_ttfb_seconds{target="silent",probe="http",type="http"} 0.07085714285714285
+pathwatch_probe_ttfb_seconds{target="http-only",probe="http",type="http"} 0.05828571428571429
+# HELP pathwatch_probe_transfer_seconds Mean transfer time of successful HTTP probe samples.
+# TYPE pathwatch_probe_transfer_seconds gauge
+pathwatch_probe_transfer_seconds{target="change",probe="http",type="http"} 0.005
+pathwatch_probe_transfer_seconds{target="silent",probe="http",type="http"} 0.005
+pathwatch_probe_transfer_seconds{target="http-only",probe="http",type="http"} 0.005
+# HELP pathwatch_probe_error_ratio Ratio (0..1) of failed probe samples over the last 5 minutes.
+# TYPE pathwatch_probe_error_ratio gauge
+pathwatch_probe_error_ratio{target="change",probe="http",type="http"} 0.125
+pathwatch_probe_error_ratio{target="change",probe="tcp",type="tcp"} 0.16666666666666669
+pathwatch_probe_error_ratio{target="silent",probe="http",type="http"} 0.125
+pathwatch_probe_error_ratio{target="silent-tcp",probe="tcp",type="tcp"} 0.16666666666666669
+pathwatch_probe_error_ratio{target="http-only",probe="http",type="http"} 0.125
+# HELP pathwatch_probe_http_status HTTP status code of the newest HTTP probe sample that got a response.
+# TYPE pathwatch_probe_http_status gauge
+pathwatch_probe_http_status{target="change",probe="http",type="http"} 200
+pathwatch_probe_http_status{target="silent",probe="http",type="http"} 200
+pathwatch_probe_http_status{target="http-only",probe="http",type="http"} 200
+# HELP pathwatch_probe_cert_expiry_timestamp_seconds Expiry (Unix time) of the newest TLS certificate seen by an HTTP probe.
+# TYPE pathwatch_probe_cert_expiry_timestamp_seconds gauge
+pathwatch_probe_cert_expiry_timestamp_seconds{target="change",probe="http",type="http"} 1.7801352e+09
+pathwatch_probe_cert_expiry_timestamp_seconds{target="silent",probe="http",type="http"} 1.7801352e+09
+pathwatch_probe_cert_expiry_timestamp_seconds{target="http-only",probe="http",type="http"} 1.7801352e+09
+# HELP pathwatch_alerts_active Number of firing alerts.
+# TYPE pathwatch_alerts_active gauge
+pathwatch_alerts_active 0
+# HELP pathwatch_outbox_pending Alert notifications queued or waiting for a retry.
+# TYPE pathwatch_outbox_pending gauge
+pathwatch_outbox_pending 0

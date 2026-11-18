@@ -5,6 +5,7 @@ import { onHealth, startStream } from './api.js';
 import { onStatus, startStatusPolling } from './store.js';
 import * as overview from './views/overview.js';
 import * as target from './views/target.js';
+import * as report from './views/report.js';
 import * as alerts from './views/alerts.js';
 import * as settings from './views/settings.js';
 
@@ -15,6 +16,7 @@ let current = null; // {name, key, instance}
 
 function matchRoute(parts) {
   if (parts.length === 0) return { name: 'overview', mod: overview, params: {}, key: 'overview' };
+  if (parts[0] === 'target' && parts[1] && parts[2] === 'report') return { name: 'report', mod: report, params: { id: parts[1] }, key: 'report/' + parts[1] };
   if (parts[0] === 'target' && parts[1]) return { name: 'target', mod: target, params: { id: parts[1] }, key: 'target/' + parts[1] };
   if (parts[0] === 'alerts') return { name: 'alerts', mod: alerts, params: {}, key: 'alerts' };
   if (parts[0] === 'settings') return { name: 'settings', mod: settings, params: {}, key: 'settings' };
@@ -30,7 +32,7 @@ export function navigate(path, query, { replace = false } = {}) {
 function route(scroll = true) {
   const { parts, query } = parseHash();
   const r = matchRoute(parts);
-  document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', !!r && a.dataset.nav === (r.name === 'target' ? 'overview' : r.name)));
+  document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', !!r && a.dataset.nav === (r.name === 'target' || r.name === 'report' ? 'overview' : r.name)));
   const ctx = { params: r ? r.params : {}, query, navigate };
   if (r && current && current.key === r.key && current.instance.update) {
     current.instance.update(ctx);

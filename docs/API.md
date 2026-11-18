@@ -30,6 +30,24 @@ Resolution tier is chosen by the server: raw rounds for ranges ≤ 6h, 1-minute 
 }
 ```
 
+## Prometheus metrics
+
+`GET /metrics` (opt-in: `metrics.enabled: true`, otherwise `404`). Same auth and middleware as `/api/*`.
+Prometheus text format 0.0.4 (`Content-Type: text/plain; version=0.0.4; charset=utf-8`). Values are over
+the last 5 minutes of the 1-minute rollups; seconds and 0..1 ratios; no sample is emitted without data.
+Label values are escaped (`\\`, `\"`, `\n`). Hops are labelled by `ttl`, never by address.
+
+| Metric | Labels |
+|---|---|
+| `pathwatch_target_up`, `_paused`, `_loss_ratio`, `_rtt_avg_seconds`, `_rtt_min_seconds`, `_rtt_max_seconds`, `_rtt_p95_seconds`, `_jitter_seconds`, `_mos`, `_hops` | `target`, `host` |
+| `pathwatch_hop_loss_ratio`, `pathwatch_hop_rtt_avg_seconds` | `target`, `ttl` |
+| `pathwatch_probe_total_seconds`, `_dns_seconds`, `_connect_seconds`, `_tls_seconds`, `_ttfb_seconds`, `_transfer_seconds`, `_error_ratio`, `_http_status`, `_cert_expiry_timestamp_seconds` | `target`, `probe`, `type` |
+| `pathwatch_alerts_active`, `pathwatch_outbox_pending` | none |
+| `pathwatch_build_info` | `version` (value 1) |
+
+`target_up`/`target_loss_ratio` use the destination (ICMP, else the TCP or HTTP probe); they are omitted
+when only the last responding hop is available (its loss is often rate limiting). DNS probes are not exported.
+
 ## Targets
 
 `GET /api/targets`
@@ -53,6 +71,14 @@ Resolution tier is chosen by the server: raw rounds for ranges ≤ 6h, 1-minute 
     "cert_not_after": 1767225600000,  // null if no HTTPS probe
     "active_alerts": 0
   },
+  "diagnosis": {                      // plain-language verdict, also over the last 5 minutes
+    "severity": "warn",               // ok | info | warn | crit
+    "code": "path_shared",            // see below
+    "where": "shared",                // local | shared | path | destination | server | dns | null
+    "hop": 3,                         // the hop the finding is about, or null
+    "headline": "Loss or delay starts at hop 3 (core1.isp.example, 203.0.113.1), which other targets share",
+    "detail": "All 4 other targets through this hop are affected too, so the problem is probably at AS64500 (Example ISP) rather than at one destination."
+  },
   "probes": [
     {"id": 3, "type": "icmp-trace", "label": "ICMP trace"},
     {"id": 4, "type": "http", "label": "HEAD https://cloudflare.com/"},
@@ -60,6 +86,25 @@ Resolution tier is chosen by the server: raw rounds for ranges ≤ 6h, 1-minute 
   ]
 }]
 ```
+
+`diagnosis` explains the status from what the hop classifier, the probes and the alert engine
+know, checked from the most fundamental cause to the most specific. Codes:
+
+| code | meaning |
+|---|---|
+| `ok`, `learning` | nothing wrong (`learning`: latency baselines are still being collected) |
+| `ok_rate_limited` | nothing wrong; `hop` is the first router that drops pings while the path beyond it is clean (ICMP rate-limiting) |
+| `paused`, `removed`, `nodata` | not measured right now (`detail` says why when it can) |
+| `local_outage` | the gateway stopped answering, or every target fails at once |
+| `path_local`, `path_shared`, `path` | the hop classifier found a real degradation starting at `hop`: inside your network, at a hop other degraded targets share, or on this target's route only |
+| `destination` | only the destination is degraded |
+| `e2e_loss` | end-to-end loss above the status threshold; with a `hop` when every hop from it to the destination loses pings (the HTTP/TCP probes may still succeed) |
+| `destination_loss` | only the destination drops pings (with clean HTTP/TCP probes it probably limits its replies) |
+| `http_failure`, `tcp_failure` | the probes fail; `where` follows the error (an HTTP status or refused connection: `server`; a name that does not resolve: `dns`; a timeout with a clean path: `server`) |
+| `http_slow`, `http_slow_server`, `http_slow_network`, `http_slow_dns`, `http_slow_transfer` | an `http_latency` alert is firing, attributed to the HTTP phase that grew the most against the 6 hours before the alert |
+| `cert_expiry`, `alert`, `degraded` | another active alert, or a status threshold without a more specific cause |
+
+`severity` follows the status: `crit` while an alert fires, `warn` when degraded or silenced.
 
 ### Target definitions
 
@@ -264,6 +309,45 @@ Non-responding TTLs are included with `address: null`, `classification: "no_repl
   "points": [[1759496400000, 3.2, 0.0]]}]                 // [ts, rtt_ms avg, fail_pct]
 ```
 
+## Export (file download)
+
+`GET /api/targets/{id}/export?from=…&to=…&format=csv|json&kind=hops|probes[&res=1m|1h]`
+
+Rollup rows of one target as an attachment (`Content-Disposition: attachment; filename="pathwatch-<target>-<kind>-<from>-<to>.csv|json"`), streamed. Range parameters as above (default last hour, at most 400 days). `format` defaults to `csv`, `kind` to `hops`.
+Resolution: 1-minute buckets up to 7 days, 1-hour beyond, unless `res` is given. Rows are only produced for buckets with data. Invalid parameters, and a request that would return more than 250,000 rows (the error says how many), answer `400 {"error": …}` before any data is sent; narrow the range or use `res=1h`.
+
+`kind=hops` columns: `bucket_start` (RFC 3339 UTC), `bucket_start_ms`, `ttl`, `address`, `hostname`, `asn`, `as_name` (the responder of the path version current at the end of the range, where known), `sent`, `lost`, `loss_pct`, `rtt_min_ms`, `rtt_avg_ms`, `rtt_max_ms`, `jitter_ms`, `rtt_p95_ms` (empty above about 60,000 rows, where histograms are skipped).
+`kind=probes` columns (HTTP and TCP probes of the target): `bucket_start`, `bucket_start_ms`, `probe_id`, `probe`, `type`, `samples`, `errors`, `error_pct`, `dns_avg_ms`, `connect_avg_ms`, `tls_avg_ms`, `ttfb_avg_ms`, `transfer_avg_ms`, `total_min_ms`, `total_avg_ms`, `total_max_ms`, `total_p95_ms`.
+
+CSV: UTF-8, header row, encoding/csv quoting, empty cell = no value. Text cells starting with `=`, `+`, `-`, `@`, tab or CR get a leading `'` (formula-injection guard; hostnames come from reverse DNS).
+JSON: `{"target_id", "target", "kind", "resolution": "1m0s", "from", "to", "row_count", "rows": [{<column>: value, …}]}` with `null` for missing values; text is exported unmodified.
+
+## Report data
+
+`GET /api/targets/{id}/report?from=…&to=…` (range parameters as above)
+```json
+{"target": {"id": 1, "name": "cloudflare", "host": "cloudflare.com"},
+ "from": 1759496400000, "to": 1759582800000, "generated_at": 1759582800000, "resolution": "1m",
+ "summary": {"source": "icmp",            // icmp | tcp | last_hop | http | none: where the end-to-end series comes from
+   "samples": 17280, "availability_pct": 99.2, "loss_pct": 0.8, "avg_ms": 12.3, "p95_ms": 21.0,
+   "jitter_ms": 1.1, "mos": 4.31,
+   "http": [{"probe_id": 4, "label": "HEAD https://cloudflare.com/", "type": "http", "samples": 2880, "errors": 3, "success_pct": 99.9, "avg_ms": 68.5}],
+   "tcp":  [{"probe_id": 5, "label": "TCP :443", "type": "tcp", "samples": 8640, "errors": 0, "success_pct": 100.0, "avg_ms": 10.3}]},
+ "incidents": [{"source": "alert",         // alert | event
+   "id": 12, "kind": "final_hop_loss",     // rule type of an alert; event kinds: degraded | icmp_unresponsive | local_outage
+   "rule": "dest-loss", "severity": "critical",   // critical | warning | info
+   "state": "resolved", "message": "…", "started_at": 1759499000000, "ended_at": 1759499300000, "ongoing": false,
+   "duration_ms": 300000,                  // an ongoing incident lasts until the end of the range
+   "ttl": null,
+   "origin": {"ttl": 7, "address": "203.0.113.9", "hostname": "core1.isp.example", "asn": 64500, "as_name": "Example ISP",
+              "reason": "loss", "loss_pct": 42.0, "avg_ms": 18.2, "baseline_max_ms": 25.0, "classification": "degraded"},
+   "probes": [{"probe_id": 5, "label": "TCP :443", "type": "tcp", "samples": 30, "errors": 12, "success_pct": 60.0, "avg_ms": 11.0}]}],
+ "truncated": false,                       // true when more than 200 incidents were in the range
+ "gaps": [{"from": 1759510000000, "to": 1759510300000, "duration_ms": 300000}],      // no data, not loss
+ "path_changes": [{"at": 1759520000000, "from_ip": "192.0.2.1", "to_ip": "192.0.2.2", "resolved_ip": "192.0.2.2"}]}
+```
+Incidents are the target's non-suppressed alerts and its `degraded`, `icmp_unresponsive` and `local_outage` events that overlap the range, oldest first. `origin` is the earliest hop where loss (above 5%) or latency (above its baseline band, from the six hours before the incident) starts while every hop and probe after it is degraded too, from `analyze.Classify` over the incident window. It is `null` when no hop qualifies (a hop that degrades alone is ICMP rate limiting) and for kinds that are not about delivery (certificate, route change, local outage, ICMP-unresponsive). `probes` is the HTTP/TCP result during the incident. Missing values are `null`.
+
 ## Alerts and events
 
 `GET /api/alerts?limit=100&target_id=…`
@@ -289,6 +373,34 @@ Kinds: `route_change`, `rate_limited`, `icmp_unresponsive`, `gap`, `local_outage
 (or `starts_at`/`ends_at`). Requires `Content-Type: application/json`. Response: the silence.
 
 `DELETE /api/silences/{id}` → 204.
+
+## Notification channels
+
+Channels are configured in the config file only (`alerts.notify`); the API shows their state and
+sends test notifications. Webhook URLs, header values and SMTP credentials are never returned;
+for environment variables only whether they are set.
+
+`GET /api/channels`
+```json
+[{"name": "webhook", "configured": true, "active": true,
+  "summary": "discord preset · URL from $PATHWATCH_WEBHOOK_URL",
+  "warnings": [],                     // e.g. "environment variable PATHWATCH_WEBHOOK_URL is empty, …"
+  "last_delivery": {"alert_id": 12, "status": "delivered", "attempts": 1, "at": 1759499300000, "error": null},
+  "last_test": {"ok": true, "error": null, "at": 1759500000000, "duration_ms": 312.4}},
+ {"name": "email", "configured": false, "active": false, "summary": "", "warnings": [], "last_delivery": null, "last_test": null}]
+```
+`active` is false when the configuration was rejected at startup. `last_delivery` is the newest
+outbox row of the channel; `last_test` is kept in memory until a restart.
+
+`POST /api/channels/{webhook|email}/test` sends a test notification right away, bypassing the
+outbox (nothing is stored or retried). It is a one-shot event: `state: "event"`, `rule_type:
+"test"`, `rule: "test-notification"`, `alert_id: 0`, no target, and a link to the alerts page when
+`public_url` is set. Response `200` with the outcome, also when delivery failed:
+```json
+{"ok": false, "error": "webhook returned HTTP 400", "at": 1759500000000, "duration_ms": 87.1}
+```
+`404` for an unknown channel, `409` when it is not configured, `429` with `Retry-After` within 10 s
+of the previous test of the same channel.
 
 ## Live stream (SSE)
 

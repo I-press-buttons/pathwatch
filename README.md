@@ -8,14 +8,18 @@ Give home labs, small networks and anyone troubleshooting flaky connectivity a f
 
 ## Features
 
+- **Plain-language diagnosis**: each target says what is wrong and where, for example "Loss or delay starts at hop 3, which other targets share" (your ISP) versus "the web server answers with an error (HTTP 503)", and explains rate-limited hops instead of alarming about them.
 - **Hop-by-hop path analysis**: sent/lost, loss %, min/avg/max/current/p95 and jitter for every hop, with inline latency bars and hostname/ASN enrichment.
 - **Path timeline**: a per-hop heatmap over time with route changes and monitor gaps marked, updated live.
 - **End-to-end probes**: HTTP/HTTPS (DNS, connect, TLS, TTFB, transfer), TCP connect and DNS, correlated on the same time axis as the hops.
-- **Rate-limit-aware alerting**: end-to-end probes decide; loss on an intermediate router alone never pages you. Hysteresis, cooldowns, silences, maintenance windows, and queued retries. Webhook (Discord, Slack, ntfy, generic) and email channels.
+- **Rate-limit-aware alerting**: end-to-end probes decide; loss on an intermediate router alone never pages you. Hysteresis, cooldowns, silences, maintenance windows, and queued retries. Webhook (Discord, Slack, ntfy, generic) and email channels, with a "Send test" button per channel (Settings) and `pathwatch notify-test`.
+- **From alert to evidence in one click**: every alert opens the target page at the time it happened, alert markers on the timeline zoom to the incident, and a target or a single rule can be silenced from the target page.
 - **MOS score** per target from latency, jitter and loss.
+- **Data export and ISP report**: download the selected range as CSV or JSON (per-hop or per-probe rollups), or open a printable report with availability, latency, MOS, incidents, the first degraded hop of each incident, probe impact, monitoring gaps and path changes.
 - **Long-term history** in SQLite with automatic rollups and retention.
-- **Configurable from the UI or YAML**: manage targets (hostname, IPv4, IPv6), intervals, thresholds and alert rules in the browser, or keep everything in a version-controlled file.
+- **Configurable from the UI or YAML**: manage targets (hostname, IPv4, IPv6; hop tracing works over both families), intervals, thresholds and alert rules in the browser, or keep everything in a version-controlled file.
 - **Themes**: nine built-in, including Dark, Nord, Solarized and a green/yellow/red Classic scale.
+- **Prometheus metrics** (opt-in): `GET /metrics` with per-target, per-hop and per-probe gauges, behind the same Basic auth as the API. See [Prometheus](#prometheus).
 - **Pure Go, no CGO**: Linux (amd64, arm64, armv7) and Windows.
 
 ## Screenshots
@@ -43,7 +47,9 @@ docker run -d --name pathwatch \
 
 Open <http://localhost:8095> and log in as `admin`. `--network host` makes probes follow your real traffic path, and `--cap-add NET_RAW` allows raw ICMP for hop tracing. The container runs as root but drops every other capability, cannot gain privileges, and has a read-only root filesystem; only `/data` is writable (see [Container hardening](#container-hardening)). If `PATHWATCH_PASSWORD` is omitted, a random one is saved to `/data/.pathwatch-password` and logged.
 
-To build from source (Go 1.26, latest patch release recommended; no C toolchain): `go build ./cmd/pathwatch && ./pathwatch run --config pathwatch.yaml`. A one-shot trace is available with `pathwatch trace <host>`.
+To build from source (Go 1.26.10 or later, latest 1.27 patch recommended; no C toolchain): `go build ./cmd/pathwatch && ./pathwatch run --config pathwatch.yaml`. A one-shot trace is available with `pathwatch trace <host>`.
+
+After setting up a webhook or email channel, check it end to end with Settings → Notification channels → Send test, or `docker exec pathwatch pathwatch notify-test`.
 
 ### Verifying downloads
 
@@ -62,6 +68,25 @@ The image runs as root (raw ICMP sockets work most reliably that way on Synology
 - **Log file location.** With `--read-only`, a `log.file` outside `/data` cannot be opened. pathwatch prints a warning and keeps logging to stderr (`docker logs`). A relative `log.file` resolves next to the config file, so it lands in `/data`.
 - **Non-root (advanced, not the default).** You can run with `user: "<uid>:<gid>"`, but the image has no file capability on the binary, so a non-root process gets no effective `NET_RAW` and raw ICMP fails; it only works with unprivileged datagram ICMP where the host's `net.ipv4.ping_group_range` allows it (often not enabled on Synology). The data folder must be owned by that uid. If you build your own image with `setcap cap_net_raw+ep` on the binary, do not combine that with `no-new-privileges` unless you have verified it on your runtime: file capabilities can be ignored under `no_new_privs` depending on the Docker/runc version, and with `+ep` a container started without `NET_RAW` in its bounding set will refuse to execute the binary at all.
 - `NET_RAW` on the host network also allows raw packet sockets on all host interfaces. That is inherent to raw ICMP mode.
+
+## Prometheus
+
+Set `metrics.enabled: true` in `pathwatch.yaml` (default `false`; the endpoint answers 404 otherwise) and scrape `/metrics`. It sits behind the same Basic auth, Host check, security headers and failed-login limiter as the API. Values cover the last 5 minutes and come from the 1-minute rollups, so scrapes are cheap; scraping more often than once a minute gains nothing.
+
+```yaml
+scrape_configs:
+  - job_name: pathwatch
+    scrape_interval: 1m
+    metrics_path: /metrics
+    scheme: http                 # https with built-in TLS or a reverse proxy
+    basic_auth:
+      username: admin
+      password_file: /etc/prometheus/pathwatch.pass
+    static_configs:
+      - targets: ["nas.local:8095"]
+```
+
+Metrics (all prefixed `pathwatch_`, times in seconds, ratios 0..1; series without data are omitted): `target_up`, `target_paused`, `target_loss_ratio`, `target_rtt_{avg,min,max,p95}_seconds`, `target_jitter_seconds`, `target_mos`, `target_hops` (labels `target`, `host`); `hop_loss_ratio`, `hop_rtt_avg_seconds` (labels `target`, `ttl`); `probe_total_seconds`, `probe_{dns,connect,tls,ttfb,transfer}_seconds`, `probe_error_ratio`, `probe_http_status`, `probe_cert_expiry_timestamp_seconds` (labels `target`, `probe`, `type`); `alerts_active`, `outbox_pending`, `build_info{version}`.
 
 ## Security
 

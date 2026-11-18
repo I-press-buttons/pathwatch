@@ -759,6 +759,21 @@ func (s *Store) LastRounds(targetID int64, n int) ([]Round, error) {
 	return out, nil
 }
 
+// LastProbeFailure returns the error of the newest failed sample of an HTTP, TCP or DNS probe
+// taken at or after since.
+func (s *Store) LastProbeFailure(probeID int64, typ string, since time.Time) (string, bool) {
+	table := map[string]string{"http": "http_samples", "tcp": "tcp_samples", "dns": "dns_samples"}[typ]
+	if table == "" {
+		return "", false
+	}
+	var v sql.NullString
+	err := s.rdb.QueryRow(`SELECT error FROM `+table+` WHERE probe_id=? AND ts>=? AND error IS NOT NULL AND error<>'' ORDER BY ts DESC LIMIT 1`, probeID, us(since)).Scan(&v)
+	if err != nil || !v.Valid {
+		return "", false
+	}
+	return v.String, true
+}
+
 // LastProbeSample returns the timestamp of the newest sample of a probe.
 func (s *Store) LastProbeSample(probeID int64, typ string) (time.Time, bool) {
 	table := map[string]string{"http": "http_samples", "tcp": "tcp_samples", "dns": "dns_samples"}[typ]
@@ -770,4 +785,14 @@ func (s *Store) LastProbeSample(probeID int64, typ string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return fromUs(v.Int64), true
+}
+
+// LastHTTPStatus returns the HTTP status code of the newest sample of an HTTP probe that got a
+// response (one index lookup on (probe_id, ts)); ok is false when there is none.
+func (s *Store) LastHTTPStatus(probeID int64) (int, bool) {
+	var v sql.NullInt64
+	if err := s.rdb.QueryRow(`SELECT status FROM http_samples WHERE probe_id=? AND status IS NOT NULL AND status>0 ORDER BY ts DESC LIMIT 1`, probeID).Scan(&v); err != nil || !v.Valid {
+		return 0, false
+	}
+	return int(v.Int64), true
 }

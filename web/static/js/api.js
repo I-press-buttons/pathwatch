@@ -86,12 +86,15 @@ export const api = {
   timeline: (id, params, o) => request('GET', `/api/targets/${id}/timeline`, { params, ...o }),
   series: (id, params, o) => request('GET', `/api/targets/${id}/series`, { params, ...o }),
   probes: (id, params, o) => request('GET', `/api/targets/${id}/probes`, { params, ...o }),
+  report: (id, params, o) => request('GET', `/api/targets/${id}/report`, { params, ...o }),
   dns: (params, o) => request('GET', '/api/dns', { params, ...o }),
   alerts: (params, o) => request('GET', '/api/alerts', { params, ...o }),
   events: (params, o) => request('GET', '/api/events', { params, ...o }),
   silences: (o) => request('GET', '/api/silences', o),
   createSilence: (body) => request('POST', '/api/silences', { body, quiet: true }),
   deleteSilence: (id) => request('DELETE', `/api/silences/${id}`, { quiet: true }),
+  channels: (o) => request('GET', '/api/channels', o),
+  testChannel: (name) => request('POST', `/api/channels/${encodeURIComponent(name)}/test`, { quiet: true }),
 };
 
 // ---------------- SSE ----------------

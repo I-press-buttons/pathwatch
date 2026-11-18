@@ -136,6 +136,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/targets/{id}/export", s.handleExport)
 	m.HandleFunc("GET /api/targets/{id}/report", s.handleReport)
 	m.HandleFunc("GET /api/dns", s.handleDNS)
+	m.HandleFunc("GET /api/network", s.handleNetwork)
 	m.HandleFunc("GET /api/alerts", s.handleAlerts)
 	m.HandleFunc("GET /api/events", s.handleEvents)
 	m.HandleFunc("GET /api/silences", s.handleSilences)

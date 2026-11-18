@@ -150,27 +150,35 @@ func (v targetView) probesOfType(t string) []scheduler.ProbeRef {
 
 func (s *Server) handleTargets(w http.ResponseWriter, r *http.Request) {
 	incl := r.URL.Query().Get("include_inactive")
-	rows, err := s.d.Store.Targets(incl == "1" || incl == "true")
+	out, _, err := s.targetList(r.Context(), incl == "1" || incl == "true")
 	if err != nil {
-		s.internal(w, r, err)
+		s.queryFailed(w, r, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// targetList builds the API objects of the stored targets, with the diagnosis context they
+// share (the combined network verdict reuses both).
+func (s *Server) targetList(ctx context.Context, inclInactive bool) ([]targetJSON, *diagContext, error) {
+	rows, err := s.d.Store.Targets(inclInactive)
+	if err != nil {
+		return nil, nil, err
 	}
 	counts, _, err := s.d.Store.ActiveAlertCounts()
 	if err != nil {
-		s.internal(w, r, err)
-		return
+		return nil, nil, err
 	}
 	out := make([]targetJSON, 0, len(rows))
 	dc := s.newDiagContext(rows)
 	for _, row := range rows {
-		tj, err := s.buildTarget(r.Context(), s.viewOf(row), counts, dc)
+		tj, err := s.buildTarget(ctx, s.viewOf(row), counts, dc)
 		if err != nil {
-			s.queryFailed(w, r, err)
-			return
+			return nil, nil, err
 		}
 		out = append(out, tj)
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out, dc, nil
 }
 
 // buildTarget builds the API object of a target. dc may be nil (it is then built for the active

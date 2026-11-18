@@ -1,4 +1,4 @@
-// Overview: one card per target, status strip, DNS probes, add/edit target.
+// Overview: network verdict, one card per target, status strip, DNS probes, add/edit target.
 import { h, clear, isNum, fmtMs, fmtPct, fmtMos, fmtAgo, clamp, lsGet, lsSet, DASH, plural } from '../util.js';
 import { api, onStream, serverNow } from '../api.js';
 import { getStatus, onStatus } from '../store.js';
@@ -10,23 +10,25 @@ const RANGES = ['1h', '6h', '24h'];
 const RANGE_MS = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 86400e3 };
 const TARGETS_MS = 10000;   // /api/targets cadence
 const SPARK_BUCKETS = 60;   // the sparkline overview is bucketed server side into this many steps
+const SEG_STATE = { ok: 'fine', warn: 'problem', crit: 'failing', unknown: 'not measured' };
 const SOON_MS = 300;        // SSE-triggered loads within this window collapse into one
 
 export function mount(root, ctx) {
   let range = lsGet('pathwatch.overviewRange', '1h');
   if (!RANGES.includes(range)) range = '1h';
-  let targets = null, spark = new Map(), loadedOnce = false, destroyed = false, timer = null, seq = 0;
+  let targets = null, net = null, netKey = '', spark = new Map(), loadedOnce = false, destroyed = false, timer = null, seq = 0;
   let busy = false, again = false, ctl = null, soon = null, sparkAt = 0, sparkRange = null;
 
   const rangeSel = h('select', { 'aria-label': 'Sparkline range', onchange: () => { range = rangeSel.value; lsSet('pathwatch.overviewRange', range); load({ fresh: true }); } },
     RANGES.map((r) => h('option', { value: r, selected: r === range }, 'Last ' + r)));
   const addBtn = h('button', { class: 'btn primary', onclick: () => openAddDialog() }, '+ Add target');
   const head = h('div', { class: 'page-head' }, h('h1', null, 'Overview'), h('div', { class: 'grow' }), rangeSel, addBtn);
+  const netEl = h('section', { class: 'diag net-verdict', hidden: true, 'aria-live': 'polite' });
   const stripEl = h('div', { class: 'strip' });
   const gridEl = h('div', { class: 'target-grid' });
   const msgEl = h('div', { class: 'state-msg', hidden: true });
   const dns = dnsPanel({ title: 'DNS probes', range: () => range });
-  root.append(head, stripEl, msgEl, gridEl, dns.el);
+  root.append(head, netEl, stripEl, msgEl, gridEl, dns.el);
 
   function renderStrip() {
     const s = getStatus();
@@ -80,9 +82,35 @@ export function mount(root, ctx) {
     if (!d || (d.severity !== 'warn' && d.severity !== 'crit')) return null;
     return h('div', { class: 'diag-line ' + d.severity }, d.where && WHERE[d.where] ? h('span', { class: 'diag-where' }, WHERE[d.where]) : null, d.headline);
   }
+  /** the combined verdict: where along the path (your network → DNS → ISP → internet → destinations) the problem is */
+  function renderNetwork() {
+    if (!net) { netEl.hidden = true; netKey = ''; return; }
+    const key = JSON.stringify(net);
+    if (key === netKey) return; // unchanged: keep focus and selection
+    netKey = key;
+    const v = net;
+    netEl.className = 'diag net-verdict ' + (v.severity || 'info');
+    const chain = h('ol', { class: 'net-chain', 'aria-label': 'Network path, from this server outwards' },
+      (v.segments || []).map((sg) => h('li', { class: 'net-seg ' + sg.state, title: sg.note || null },
+        h('span', { class: 'net-dot', 'aria-hidden': 'true' }),
+        h('span', { class: 'net-label' }, sg.label),
+        h('span', { class: 'sr-only' }, ': ' + SEG_STATE[sg.state] + (sg.note ? ' (' + sg.note + ')' : '')))));
+    const link = v.target_id != null
+      ? h('a', { class: 'btn sm', href: '#/target/' + v.target_id + (v.hop != null ? '?ttl=' + v.hop : '') }, v.hop != null ? 'Show hop ' + v.hop : 'Open target')
+      : null;
+    clear(netEl).append(
+      h('div', { class: 'diag-text' },
+        h('div', { class: 'diag-head' }, v.where && WHERE[v.where] ? h('span', { class: 'diag-where' }, WHERE[v.where]) : null, h('strong', null, v.headline)),
+        v.detail ? h('div', { class: 'diag-detail' }, v.detail) : null,
+        chain,
+        h('div', { class: 'diag-note' }, 'Whole network, based on the last 5 minutes')));
+    if (link) netEl.append(link);
+    netEl.hidden = false;
+  }
   function metric(k, v, cls) { return h('div', { class: 'metric' }, h('div', { class: 'k' }, k), h('div', { class: 'v ' + (cls || '') }, v)); }
 
   function render() {
+    renderNetwork();
     renderStrip();
     clear(gridEl);
     if (!targets) return;
@@ -109,10 +137,12 @@ export function mount(root, ctx) {
     const wantSpark = sparkRange !== rng || started - sparkAt >= sparkEvery() - 500; // 500 ms: interval ticks are not exact
     if (!loadedOnce) { msgEl.hidden = false; msgEl.className = 'state-msg'; clear(msgEl).append(h('span', { class: 'spinner' }), 'Loading targets…'); }
     try {
-      const [t, o] = await Promise.all([api.targets({ signal }),
-        wantSpark ? api.overview({ range: rng }, { signal }).catch((e) => { if (e && e.name === 'AbortError') throw e; return null; }) : null]);
+      const [t, o, n] = await Promise.all([api.targets({ signal }),
+        wantSpark ? api.overview({ range: rng }, { signal }).catch((e) => { if (e && e.name === 'AbortError') throw e; return null; }) : null,
+        api.network({ signal, quiet: true }).catch((e) => { if (e && e.name === 'AbortError') throw e; return null; })]);
       if (my !== seq || destroyed) return;
       targets = t || [];
+      net = n;
       if (o) { spark = new Map(o.map((x) => [x.target_id, x])); sparkAt = started; sparkRange = rng; }
       else if (wantSpark && sparkRange !== rng) spark = new Map(); // failed for a new range: don't show the old range's lines (retried next load)
       loadedOnce = true;

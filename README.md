@@ -8,6 +8,7 @@ Give home labs, small networks and anyone troubleshooting flaky connectivity a f
 
 ## Features
 
+- **Whole-network verdict**: the Overview opens with one answer for the network, from this server outwards: your network (gateway), DNS (your own resolver, such as AdGuard Home or Pi-hole, through a DNS probe), your ISP, the internet and the destinations, for example "Your DNS resolver adguard (192.168.1.5:53) is not answering" or "Your internet connection is down: the router answers, nothing beyond it does".
 - **Plain-language diagnosis**: each target says what is wrong and where, for example "Loss or delay starts at hop 3, which other targets share" (your ISP) versus "the web server answers with an error (HTTP 503)", and explains rate-limited hops instead of alarming about them.
 - **Hop-by-hop path analysis**: sent/lost, loss %, min/avg/max/current/p95 and jitter for every hop, with inline latency bars and hostname/ASN enrichment.
 - **Path timeline**: a per-hop heatmap over time with route changes and monitor gaps marked, updated live.

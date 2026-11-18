@@ -262,6 +262,18 @@ table.hops .tagline.start { color: var(--crit); border-color: color-mix(in srgb,
 .diag-line .diag-where { margin-right: 6px; font-size: 10.5px; }
 .diag-line.warn { color: var(--warn); }
 .diag-line.crit { color: var(--crit); }
+/* network verdict (overview): the path from this server outwards, one dot per segment */
+.net-verdict { margin-bottom: 14px; }
+.net-chain { list-style: none; margin: 10px 0 2px; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 0; font-size: 12.5px; }
+.net-seg { display: flex; align-items: center; gap: 6px; color: var(--text-muted); }
+.net-seg + .net-seg::before { content: ""; width: 22px; height: 2px; margin: 0 6px; background: var(--border-strong); }
+.net-dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--border-strong); background: transparent; flex: none; }
+.net-seg.ok .net-dot { background: var(--ok); border-color: var(--ok); }
+.net-seg.warn .net-dot { background: var(--warn); border-color: var(--warn); }
+.net-seg.crit .net-dot { background: var(--crit); border-color: var(--crit); }
+.net-seg.warn .net-label { color: var(--warn); font-weight: 600; }
+.net-seg.crit .net-label { color: var(--crit); font-weight: 650; }
+@media (max-width: 560px) { .net-chain { gap: 6px 0; } .net-seg + .net-seg::before { width: 8px; margin: 0 5px; } }
 @media (max-width: 760px) { .diag { flex-direction: column; } }
 table.hops .badge-lb { display: inline-block; margin-left: 5px; font-size: 11px; font-weight: 700; padding: 0 5px; border-radius: 4px; background: color-mix(in srgb, var(--info) 18%, var(--surface)); color: var(--info); cursor: help; }
 .loss-hi { color: var(--crit); font-weight: 700; } .loss-mid { color: var(--warn); font-weight: 600; }

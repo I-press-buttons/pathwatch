@@ -30,6 +30,49 @@ Resolution tier is chosen by the server: raw rounds for ranges ≤ 6h, 1-minute 
 }
 ```
 
+## Network verdict
+
+`GET /api/network`: one verdict for the whole network over the last 5 minutes, combining the
+local-outage detector (gateway), the DNS resolver probes, the first hop outside your network
+(ISP) and every running target's `diagnosis`. It answers "is something wrong, and where?".
+```json
+{
+  "severity": "crit",                 // ok | info | warn | crit
+  "code": "dns_local_down",
+  "where": "dns",                     // local | dns | isp | shared | path | destination | server | null
+  "hop": null,                        // the hop the verdict is about, on target_id's path
+  "target_id": null,                  // the target whose diagnosis the verdict comes from
+  "headline": "Your DNS resolver adguard (192.168.1.5:53) is not answering",
+  "detail": "Lookups get no reply, so devices that use it cannot open sites by name. …",
+  "segments": [                       // the path from this server outwards
+    {"key": "local", "label": "Your network", "state": "ok", "note": "Gateway answers (192.168.1.1)"},
+    {"key": "dns", "label": "DNS", "state": "crit", "note": "adguard is failing"},
+    {"key": "isp", "label": "ISP", "state": "ok", "note": "First ISP hop answers (hop 2, 203.0.113.1)"},
+    {"key": "internet", "label": "Internet", "state": "ok", "note": ""},
+    {"key": "destinations", "label": "Destinations", "state": "ok", "note": "3 of 3 targets fine"}
+  ],                                  // state: ok | warn | crit | unknown
+  "affected": [{"id": 2, "name": "github", "severity": "warn", "where": "path", "headline": "…"}],
+  "dns": [{"probe_id": 4, "name": "adguard", "server": "192.168.1.5:53", "local": true,
+           "state": "failing", "fail_pct": 100, "avg_ms": null, "last_error": "… i/o timeout"}]
+}
+```
+A DNS probe is `local` when its server is a private, link-local or loopback address. It is
+`failing` while a `dns_failure` alert fires or at least half of its lookups (with two or more
+samples) failed in the window, and `slow` while a `dns_latency` alert fires. Codes, checked in
+this order:
+
+| code | meaning |
+|---|---|
+| `nothing_monitored` | no target and no DNS probe |
+| `gateway_down` | the router (hop 1/2) stopped answering while the targets fail |
+| `isp_outage` | every target fails while the router still answers: modem, line or ISP |
+| `connection_down` | every target fails and the router's state is unknown |
+| `dns_local_down`, `dns_local_upstream`, `dns_local_rejects` | a local resolver does not answer, answers SERVFAIL (its upstream fails), or answers with another error code |
+| `local_problem`, `isp_problem`, `dns_problem`, `upstream_problem`, `target_problem` | targets have problems; the verdict follows the most fundamental location among their diagnoses (your network, ISP, DNS, a shared hop beyond the ISP, then single routes or servers) and lists the affected targets |
+| `dns_public_failing`, `dns_slow` | a resolver outside your network fails, or a resolver is slow, while the targets are fine |
+| `nodata` | no target has recent results |
+| `ok` | nothing wrong (suggests a DNS probe for your own resolver when there is none) |
+
 ## Prometheus metrics
 
 `GET /metrics` (opt-in: `metrics.enabled: true`, otherwise `404`). Same auth and middleware as `/api/*`.
@@ -74,7 +117,7 @@ when only the last responding hop is available (its loss is often rate limiting)
   "diagnosis": {                      // plain-language verdict, also over the last 5 minutes
     "severity": "warn",               // ok | info | warn | crit
     "code": "path_shared",            // see below
-    "where": "shared",                // local | shared | path | destination | server | dns | null
+    "where": "shared",                // local | isp | shared | path | destination | server | dns | null
     "hop": 3,                         // the hop the finding is about, or null
     "headline": "Loss or delay starts at hop 3 (core1.isp.example, 203.0.113.1), which other targets share",
     "detail": "All 4 other targets through this hop are affected too, so the problem is probably at AS64500 (Example ISP) rather than at one destination."
@@ -96,11 +139,11 @@ know, checked from the most fundamental cause to the most specific. Codes:
 | `ok_rate_limited` | nothing wrong; `hop` is the first router that drops pings while the path beyond it is clean (ICMP rate-limiting) |
 | `paused`, `removed`, `nodata` | not measured right now (`detail` says why when it can) |
 | `local_outage` | the gateway stopped answering, or every target fails at once |
-| `path_local`, `path_shared`, `path` | the hop classifier found a real degradation starting at `hop`: inside your network, at a hop other degraded targets share, or on this target's route only |
+| `path_local`, `path_isp`, `path_shared`, `path` | the hop classifier found a real degradation starting at `hop`: inside your network, at your ISP (the first hop outside your network, a carrier-grade NAT address, or a hop in that hop's AS), at a hop other degraded targets share, or on this target's route only |
 | `destination` | only the destination is degraded |
 | `e2e_loss` | end-to-end loss above the status threshold; with a `hop` when every hop from it to the destination loses pings (the HTTP/TCP probes may still succeed) |
 | `destination_loss` | only the destination drops pings (with clean HTTP/TCP probes it probably limits its replies) |
-| `http_failure`, `tcp_failure` | the probes fail; `where` follows the error (an HTTP status or refused connection: `server`; a name that does not resolve: `dns`; a timeout with a clean path: `server`) |
+| `http_failure`, `tcp_failure` | the probes fail; `where` follows the error (an HTTP status or refused connection: `server`; a name that does not resolve: `dns`, naming the failing local resolver when a DNS probe of it fails too; a timeout with a clean path: `server`) |
 | `http_slow`, `http_slow_server`, `http_slow_network`, `http_slow_dns`, `http_slow_transfer` | an `http_latency` alert is firing, attributed to the HTTP phase that grew the most against the 6 hours before the alert |
 | `cert_expiry`, `alert`, `degraded` | another active alert, or a status threshold without a more specific cause |
 

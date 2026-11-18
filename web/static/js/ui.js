@@ -30,9 +30,9 @@ export function deliveryPill(d) {
 
 // ---------- diagnosis ----------
 /** Short labels for where a diagnosis places the problem (diagnosis.where in /api/targets). */
-export const WHERE = { local: 'Your network', shared: 'Shared hop', path: 'On the route', destination: 'Destination', server: 'Server', dns: 'DNS' };
+export const WHERE = { local: 'Your network', isp: 'Your ISP', shared: 'Shared hop', path: 'On the route', destination: 'Destination', server: 'Server', dns: 'DNS' };
 /** Diagnoses that point at the hop where a degradation starts (as opposed to a rate-limited hop). */
-export function diagStartsAtHop(d) { return !!d && d.hop != null && /^(path|path_local|path_shared|destination|destination_loss|e2e_loss)$/.test(d.code); }
+export function diagStartsAtHop(d) { return !!d && d.hop != null && /^(path|path_local|path_isp|path_shared|destination|destination_loss|e2e_loss)$/.test(d.code); }
 
 // ---------- incidents ----------
 /** Context shown before an alert's start and after its end (the same as the deep links in notifications). */

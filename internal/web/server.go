@@ -53,7 +53,6 @@ type Server struct {
 	mux     *http.ServeMux
 	now     func() time.Time
 	started time.Time
-	maint   alert.MaintenanceWindows
 	userSum [32]byte
 	passSum [32]byte
 	files   http.Handler
@@ -73,9 +72,6 @@ func New(d Deps) *Server {
 		d.Hub = NewHub()
 	}
 	s := &Server{d: d, log: d.Logger, hub: d.Hub, mux: http.NewServeMux(), now: d.Now, started: d.Now(), limiter: newAuthLimiter(), tests: newChannelTests()}
-	if d.Config != nil {
-		s.maint = alert.MaintenanceWindows(d.Config.Alerts.MaintenanceWindows)
-	}
 	s.userSum = sha256.Sum256([]byte(d.Auth.User))
 	s.passSum = sha256.Sum256([]byte(d.Auth.Password))
 	s.hub.alertJSON = s.alertByID
@@ -84,6 +80,14 @@ func New(d Deps) *Server {
 	}
 	s.routes()
 	return s
+}
+
+// maintenance returns the maintenance windows of the effective configuration.
+func (s *Server) maintenance() alert.MaintenanceWindows {
+	if c := s.cfg(); c != nil {
+		return alert.MaintenanceWindows(c.Alerts.MaintenanceWindows)
+	}
+	return nil
 }
 
 // cfg returns the effective configuration.

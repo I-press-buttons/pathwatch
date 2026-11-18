@@ -1,6 +1,7 @@
 // Package settings manages the settings edited in the web UI. They are stored in the database
-// and layered over the config file: probe defaults, status thresholds, alert rules and DNS
-// probes replace the file's section when edited; a config-file target edited in the UI is
+// and layered over the config file: probe defaults, status thresholds, alert rules, DNS probes,
+// maintenance windows, notification channels, the heartbeat, data retention and hop enrichment
+// replace the file's section when edited; a config-file target edited in the UI is
 // replaced by its edited definition; UI-managed targets exist only in the database. The
 // manager computes the effective configuration and applies every change to the scheduler and
 // the alert engine at once, without a restart.
@@ -26,7 +27,17 @@ const (
 	KeyStatus    = "status"
 	KeyAlerts    = "alerts"
 	KeyDNSProbes = "dns_probes"
+	KeyMaint     = "maintenance_windows"
+	KeyNotify    = "notify"
+	KeyHeartbeat = "heartbeat"
+	KeyRetention = "retention"
+	KeyEnrich    = "enrich"
 )
+
+// ReverseDNSSetter turns hop reverse DNS lookups on or off (the enricher).
+type ReverseDNSSetter interface {
+	SetReverseDNS(bool)
+}
 
 // Engine is the alert engine (it re-reads rules, thresholds and per-target settings).
 type Engine interface {
@@ -59,6 +70,7 @@ type Manager struct {
 	file *config.Config
 	ov   config.Overrides
 	eng  Engine
+	rdns ReverseDNSSetter
 	eff  atomic.Pointer[config.Config]
 }
 
@@ -86,6 +98,16 @@ func New(st *store.Store, sched *scheduler.Scheduler, file *config.Config, log *
 func (m *Manager) SetEngine(e Engine) {
 	m.mu.Lock()
 	m.eng = e
+	m.mu.Unlock()
+}
+
+// SetEnricher attaches the hop enricher, which follows the reverse DNS setting.
+func (m *Manager) SetEnricher(r ReverseDNSSetter) {
+	m.mu.Lock()
+	m.rdns = r
+	if r != nil {
+		r.SetReverseDNS(m.eff.Load().ReverseDNSEnabled())
+	}
 	m.mu.Unlock()
 }
 
@@ -154,6 +176,26 @@ func (m *Manager) decodeOverrides(raw map[string]string) config.Overrides {
 	var dp []config.DNSProbeConfig
 	if dec(KeyDNSProbes, &dp) {
 		ov.DNSProbes = &dp
+	}
+	var mw []config.MaintenanceWindow
+	if dec(KeyMaint, &mw) {
+		ov.Maintenance = &mw
+	}
+	var n config.NotifySettings
+	if dec(KeyNotify, &n) {
+		ov.Notify = &n
+	}
+	var hb config.HeartbeatConfig
+	if dec(KeyHeartbeat, &hb) {
+		ov.Heartbeat = &hb
+	}
+	var rt config.RetentionSettings
+	if dec(KeyRetention, &rt) {
+		ov.Retention = &rt
+	}
+	var en config.EnrichSettings
+	if dec(KeyEnrich, &en) {
+		ov.Enrich = &en
 	}
 	return ov
 }
@@ -275,7 +317,7 @@ func (m *Manager) computeWithFallback() (*config.Config, error) {
 	if err == nil {
 		return eff, nil
 	}
-	m.log.Error("settings edited in the web UI do not fit the config file; using the config file's defaults, status thresholds, alert rules and DNS probes until they are saved again", "err", err)
+	m.log.Error("settings edited in the web UI do not fit the config file; using the config file's version of every section edited in the UI until they are saved again", "err", err)
 	s.ov = config.Overrides{}
 	if s2, lerr := m.load(m.file.Defaults); lerr == nil {
 		s.edited, s.ui = s2.edited, s2.ui
@@ -306,6 +348,14 @@ func resolveUI(eff *config.Config, ui []uiTarget) (map[int64]config.Target, erro
 
 // push applies an effective configuration to the scheduler and, when asked, the alert engine.
 func (m *Manager) push(eff *config.Config, reloadEngine bool) error {
+	m.st.SetRetention(store.Retention{
+		Raw:      eff.Storage.RawRetention.D(),
+		Rollup1m: eff.Storage.Rollup1mRetention.D(),
+		Rollup1h: eff.Storage.Rollup1hRetention.D(),
+	})
+	if m.rdns != nil {
+		m.rdns.SetReverseDNS(eff.ReverseDNSEnabled())
+	}
 	m.sched.SetDefaults(eff.Defaults)
 	if err := m.sched.SyncConfig(eff.ResolveTargets(), eff.ResolveDNSProbes()); err != nil {
 		return err
@@ -353,6 +403,11 @@ func (m *Manager) change(s state, save func() error) error {
 func (m *Manager) setSection(key string, value any, isNil bool, set func(*config.Overrides)) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.setSectionLocked(key, value, isNil, set)
+}
+
+// setSectionLocked is setSection for callers holding m.mu.
+func (m *Manager) setSectionLocked(key string, value any, isNil bool, set func(*config.Overrides)) error {
 	ov := m.ov
 	set(&ov)
 	s, err := m.load(m.defaultsFor(ov))
@@ -402,6 +457,56 @@ func (m *Manager) SetDNSProbes(list *[]config.DNSProbeConfig) error {
 		list = &empty
 	}
 	return m.setSection(KeyDNSProbes, list, list == nil, func(o *config.Overrides) { o.DNSProbes = list })
+}
+
+// SetMaintenanceWindows stores the maintenance windows edited in the UI (nil reverts).
+func (m *Manager) SetMaintenanceWindows(list *[]config.MaintenanceWindow) error {
+	if list != nil {
+		l := make([]config.MaintenanceWindow, len(*list))
+		for i, w := range *list {
+			w.Name, w.Start, w.End, w.Timezone = strings.TrimSpace(w.Name), strings.TrimSpace(w.Start), strings.TrimSpace(w.End), strings.TrimSpace(w.Timezone)
+			l[i] = w
+		}
+		list = &l
+	}
+	return m.setSection(KeyMaint, list, list == nil, func(o *config.Overrides) { o.Maintenance = list })
+}
+
+// SetNotify stores the notification channels edited in the UI (nil reverts). Secrets sent back
+// as config.HeaderPlaceholder keep their current value while the destination is unchanged, and
+// environment references are limited (see config.CheckNotifyEnv).
+func (m *Manager) SetNotify(n *config.NotifySettings) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if n != nil {
+		r, err := config.RestoreNotify(*n, m.eff.Load().Alerts.NotifySettings())
+		if err != nil {
+			return invalid(err)
+		}
+		if err := config.CheckNotifyEnv(r, m.file.Alerts.Notify); err != nil {
+			return invalid(err)
+		}
+		n = &r
+	}
+	return m.setSectionLocked(KeyNotify, n, n == nil, func(o *config.Overrides) { o.Notify = n })
+}
+
+// SetHeartbeat stores the heartbeat edited in the UI (nil reverts).
+func (m *Manager) SetHeartbeat(h *config.HeartbeatConfig) error {
+	if h != nil {
+		h.URL = strings.TrimSpace(h.URL)
+	}
+	return m.setSection(KeyHeartbeat, h, h == nil, func(o *config.Overrides) { o.Heartbeat = h })
+}
+
+// SetRetention stores the retention periods edited in the UI (nil reverts).
+func (m *Manager) SetRetention(r *config.RetentionSettings) error {
+	return m.setSection(KeyRetention, r, r == nil, func(o *config.Overrides) { o.Retention = r })
+}
+
+// SetEnrich stores the hop enrichment settings edited in the UI (nil reverts).
+func (m *Manager) SetEnrich(e *config.EnrichSettings) error {
+	return m.setSection(KeyEnrich, e, e == nil, func(o *config.Overrides) { o.Enrich = e })
 }
 
 // ---------------------------------------------------------------------------

@@ -292,13 +292,16 @@ func renderNtfy(n Notification) ([]byte, map[string]string, error) {
 
 // Send delivers one notification. Errors never contain the webhook URL.
 func (w *WebhookSender) Send(ctx context.Context, n Notification) error {
-	target := strings.TrimSpace(w.getenv(w.cfg.URLEnv))
-	if target == "" {
-		return fmt.Errorf("webhook URL environment variable %s is empty", w.cfg.URLEnv)
+	target, where := strings.TrimSpace(w.cfg.URL), "the settings"
+	if w.cfg.URLEnv != "" {
+		target, where = strings.TrimSpace(w.getenv(w.cfg.URLEnv)), w.cfg.URLEnv
+		if target == "" {
+			return fmt.Errorf("webhook URL environment variable %s is empty", w.cfg.URLEnv)
+		}
 	}
 	u, err := url.Parse(target)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("webhook URL in %s is not a valid http(s) URL", w.cfg.URLEnv)
+		return fmt.Errorf("webhook URL in %s is not a valid http(s) URL", where)
 	}
 	body, hdr, err := w.Render(n)
 	if err != nil {

@@ -155,7 +155,11 @@ func webhookSummary(wh config.WebhookConfig) (string, []string) {
 	if wh.BodyTemplate != "" {
 		parts = append(parts, "custom body_template")
 	}
-	parts = append(parts, "URL from $"+wh.URLEnv)
+	if wh.URLEnv != "" {
+		parts = append(parts, "URL from $"+wh.URLEnv)
+	} else {
+		parts = append(parts, "URL saved in settings")
+	}
 	var warn []string
 	if wh.URLEnv != "" && strings.TrimSpace(os.Getenv(wh.URLEnv)) == "" {
 		warn = append(warn, "environment variable "+wh.URLEnv+" is empty, so nothing can be sent")

@@ -1,5 +1,6 @@
 // Notification channels panel (Settings): what is configured, how the last alert notification
-// went, and a "Send test" button per channel. Channels are configured in the config file only.
+// went, and a "Send test" button per channel. Channels are set up in the Notifications settings
+// section (or the config file).
 import { h, clear, fmtAgo, fmtDateTime, DASH } from '../util.js';
 import { api, serverNow } from '../api.js';
 import { panel, DELIVERY } from '../ui.js';
@@ -9,7 +10,7 @@ const LABEL = { webhook: 'Webhook', email: 'Email' };
 export function channelsPanel() {
   const p = panel('Notification channels');
   const note = h('p', { class: 'muted small intro' },
-    'Channels are set up in the config file (alerts.notify), with URLs and passwords in environment variables. ',
+    'Channels are set up under Notifications above (or in the config file\u2019s alerts.notify). ',
     'Send a test to check delivery end to end. A test is sent immediately, is not stored and is not retried.');
   let seq = 0, list = null;
   const busy = new Set();      // channels with a test in flight
@@ -61,7 +62,7 @@ export function channelsPanel() {
         d.error ? h('div', { class: 'alert-msg' }, d.error) : null) : h('span', { class: 'muted' }, c.configured ? 'nothing sent yet' : DASH);
       const t = c.last_test;
       const sending = busy.has(c.name);
-      const btn = h('button', { class: 'btn sm', type: 'button', disabled: !c.active || sending, title: c.active ? `Send a test notification over the ${c.name} channel now` : 'Configure this channel in the config file first',
+      const btn = h('button', { class: 'btn sm', type: 'button', disabled: !c.active || sending, title: c.active ? `Send a test notification over the ${c.name} channel now` : 'Set up this channel under Notifications first',
         onclick: () => test(c.name) }, sending ? 'Sending…' : 'Send test');
       const reqErr = errors.get(c.name);
       return h('tr', null,

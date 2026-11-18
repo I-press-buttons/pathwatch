@@ -50,8 +50,11 @@ type Store struct {
 	wdb  *sql.DB // single connection, used only by the writer goroutine (and vacuum)
 	rdb  *sql.DB // read pool
 	opts Options
-	log  *slog.Logger
-	now  func() time.Time
+	// retention holds the current retention periods (opts has the ones Open was given); the
+	// settings change them at run time with SetRetention.
+	ret atomic.Pointer[Retention]
+	log *slog.Logger
+	now func() time.Time
 
 	ops       chan op
 	quit      chan struct{}
@@ -149,6 +152,7 @@ func Open(path string, o Options) (*Store, error) {
 		agg:       NewAggregator(),
 		certs:     make(map[int64]certEntry),
 	}
+	s.SetRetention(Retention{Raw: o.RawRetention, Rollup1m: o.Rollup1mRetention, Rollup1h: o.Rollup1hRetention})
 	s.lastWrit.Store(time.Now().UnixNano())
 	go s.writer()
 	if o.NoBackground {

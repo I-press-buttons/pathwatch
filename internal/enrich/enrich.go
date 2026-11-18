@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/oschwald/maxminddb-golang"
@@ -53,6 +54,7 @@ type Enricher struct {
 	wg    sync.WaitGroup
 	quit  chan struct{}
 	once  sync.Once
+	rdns  atomic.Bool // reverse DNS on (Options.ReverseDNS, changed by SetReverseDNS)
 }
 
 // New creates an Enricher and starts its workers. Close stops them.
@@ -73,6 +75,7 @@ func New(o Options) *Enricher {
 		o.LookupAddr = net.DefaultResolver.LookupAddr
 	}
 	e := &Enricher{opts: o, log: o.Logger, cache: map[netip.Addr]Info{}, infl: map[netip.Addr]bool{}, queue: make(chan netip.Addr, 512), quit: make(chan struct{})}
+	e.rdns.Store(o.ReverseDNS)
 	if o.ASNDBPath != "" {
 		r, err := maxminddb.Open(o.ASNDBPath)
 		if err != nil {
@@ -97,6 +100,10 @@ func New(o Options) *Enricher {
 	}
 	return e
 }
+
+// SetReverseDNS turns hop reverse DNS lookups on or off for lookups from now on. Names already
+// looked up stay until they expire.
+func (e *Enricher) SetReverseDNS(on bool) { e.rdns.Store(on) }
 
 // Close stops the workers.
 func (e *Enricher) Close() {
@@ -193,7 +200,7 @@ type asnRecord struct {
 
 func (e *Enricher) resolve(a netip.Addr) Info {
 	info := Info{UpdatedAt: time.Now()}
-	if e.opts.ReverseDNS {
+	if e.rdns.Load() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		names, err := e.opts.LookupAddr(ctx, a.String())
 		cancel()

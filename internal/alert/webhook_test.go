@@ -246,3 +246,20 @@ func TestFormatDuration(t *testing.T) {
 		}
 	}
 }
+
+func TestWebhookLiteralURL(t *testing.T) {
+	var path string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { path = r.URL.Path; w.WriteHeader(204) }))
+	defer ts.Close()
+	w, err := NewWebhookSender(config.WebhookConfig{URL: ts.URL + "/stored/token", Preset: "generic"}, nil, func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Send(context.Background(), noteFor(StateFiring)); err != nil {
+		t.Fatal(err)
+	}
+	want(t, path == "/stored/token", "path %q", path)
+	w, _ = NewWebhookSender(config.WebhookConfig{URL: "ftp://secret-host/token"}, nil, nil)
+	err = w.Send(context.Background(), noteFor(StateFiring))
+	want(t, err != nil && !strings.Contains(err.Error(), "secret-host"), "bad stored URL: %v", err)
+}

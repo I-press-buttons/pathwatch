@@ -366,7 +366,7 @@ func (s *Server) statusOf(v targetView, now, lastRound time.Time, sum summaryJSO
 
 // silenced reports whether an all-rules silence or maintenance window covers the target now.
 func (s *Server) silenced(now time.Time, targetID int64) bool {
-	if _, ok := s.maint.Silenced(now); ok {
+	if _, ok := s.maintenance().Silenced(now); ok {
 		return true
 	}
 	sils, err := s.d.Store.Silences(now)

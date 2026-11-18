@@ -23,7 +23,7 @@ export function mount(root, ctx) {
     [['', 'All states'], ['firing', 'Firing'], ['resolved', 'Resolved'], ['suppressed', 'Suppressed']].map(([v, l]) => h('option', { value: v }, l)));
   const feed = panel('Alert feed', { actions: h('div', { class: 'row', style: { gap: '8px', alignItems: 'center' } }, targetSel, stateSel), flush: true });
   const sil = panel('Silences', { flush: true });
-  const maint = panel('Maintenance windows (from config, read-only)', { flush: true });
+  const maint = panel('Active maintenance windows', { flush: true, actions: h('a', { href: '#/settings', style: { fontSize: '12.5px' } }, 'Edit in Settings →') });
   const formPanel = panel('Silence alerts');
 
   root.append(h('div', { class: 'page-head' }, h('h1', null, 'Alerts'), h('span', { class: 'sub' }, 'Alerts, silences and maintenance windows')), feed.el,
@@ -87,7 +87,7 @@ export function mount(root, ctx) {
         h('thead', null, h('tr', null, ['Scope', 'Window', 'Reason', ''].map((c) => h('th', null, c)))), h('tbody', null, rows))));
       sil.showContent();
     }
-    if (!ms.length) maint.showEmpty('No maintenance windows active.', 'Recurring windows are defined under alerts.maintenance_windows in the config file.');
+    if (!ms.length) maint.showEmpty('No maintenance windows active.', ['Recurring windows are set up under ', h('a', { href: '#/settings' }, 'Settings → Maintenance windows'), '.']);
     else {
       clear(maint.content).append(h('div', { class: 'table-scroll' }, h('table', { class: 'list-table stack' },
         h('thead', null, h('tr', null, ['Window', 'Scope', 'Active until'].map((c) => h('th', null, c)))),

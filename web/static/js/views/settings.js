@@ -18,9 +18,9 @@ const ICMP_TEXT = {
 export function mount(root) {
   const themeP = panel('Theme');
   const aboutP = panel('About this server');
-  const dns = dnsPanel({ title: 'DNS probe results', range: '6h' });
+  const dns = dnsPanel({ title: 'DNS probe results', range: '6h', emptyHint: 'Add one in DNS probe setup to monitor a resolver such as your router or Pi-hole.' });
   const channels = channelsPanel();
-  const editors = settingsEditors({ onSaved: () => { refreshStatus(); dns.load(); } });
+  const editors = settingsEditors({ onSaved: () => { refreshStatus(); dns.load(); channels.load(); } });
   root.append(
     h('div', { class: 'page-head' }, h('h1', null, 'Settings'),
       h('span', { class: 'sub' }, 'Monitoring settings are saved on the server and apply immediately; the theme is saved in this browser.')),

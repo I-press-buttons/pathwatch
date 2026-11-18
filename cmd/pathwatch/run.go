@@ -168,6 +168,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("load settings: %w", err)
 	}
+	mgr.SetEnricher(en)
 	engine := alert.NewRuleEngine(alert.RuleEngineOptions{
 		Store: st, Sink: hub, Config: mgr.Effective(), Log: log,
 		// the heartbeat shares /healthz's health signal

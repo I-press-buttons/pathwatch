@@ -693,6 +693,19 @@ func (s *Store) Settings() (map[string]string, error) {
 	return out, rows.Err()
 }
 
+// Setting returns one stored setting, and whether it exists.
+func (s *Store) Setting(key string) (string, bool, error) {
+	var v string
+	err := s.rdb.QueryRow(`SELECT value FROM settings WHERE key=?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return v, true, nil
+}
+
 // SetSetting stores a setting; an empty value deletes it.
 func (s *Store) SetSetting(key, value string) error {
 	return s.exec(func(tx *sql.Tx) error {

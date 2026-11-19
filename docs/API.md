@@ -363,6 +363,29 @@ Non-responding TTLs are included with `address: null`, `classification: "no_repl
 ```
 One entry per query, grouped by server. `name` is the DNS server's name; `label` adds the query
 when the server has several (it is the name used in alerts).
+`samples` and `failures` count the queries sent and the ones that failed over the whole range.
+
+## Profile (per-user preferences)
+
+`GET /api/profile`
+```json
+{"user": "admin",
+ "overview": {"sections": [{"id": "network", "hidden": false}, {"id": "dns", "hidden": false},
+                           {"id": "status", "hidden": true}, {"id": "targets", "hidden": false}],
+              "target_order": [3, 1, 2],
+              "dns": {"group_by": "server",                  // server | query | none
+                      "probe_order": [6, 7, 4, 5],
+                      "group_order": {"server": ["pihole", "router"], "query": ["example.com"]}}}}
+```
+Preferences stored on the server for the signed-in Basic auth user (`"default"` when auth is off),
+so they follow the account, not the browser. `overview` is the Overview page layout, or `null` for
+the default (sections `network`, `status`, `targets`, `dns` in that order, DNS grouped by server).
+
+`PUT /api/profile/overview` with a layout as above saves it and answers like `GET`. Unknown fields,
+unknown or repeated section ids and unknown groupings answer `400`; sections left out are appended
+in default order. Ids in `target_order` / `probe_order` and keys in `group_order` that no longer
+exist are ignored by the UI; new targets, probes and groups go after the ordered ones.
+`DELETE /api/profile/overview` restores the default layout.
 
 ## Export (file download)
 

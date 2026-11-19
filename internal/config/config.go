@@ -42,8 +42,12 @@ const (
 	MaxTargets = 200
 	// MaxProbesPerTarget bounds the probes listed on one target.
 	MaxProbesPerTarget = 16
-	// MaxDNSProbes bounds the DNS probes (file or UI).
+	// MaxDNSProbes bounds the DNS servers (dns_probes entries, file or UI).
 	MaxDNSProbes = 50
+	// MaxDNSQueries bounds the queries of one DNS server.
+	MaxDNSQueries = 32
+	// MaxDNSQueriesTotal bounds the queries of all DNS servers together.
+	MaxDNSQueriesTotal = 200
 )
 
 // Config is the top-level YAML document.
@@ -228,16 +232,54 @@ var DNSQueryPresets = []string{
 	"amazon.com", "apnews.com", "cloudflare.com", "microsoft.com", "apple.com",
 }
 
-// DNSProbeConfig queries a resolver directly, independent of any target. A blank query uses
-// defaults.dns_query.
+// DNSProbeConfig is one DNS server (resolver) queried directly, independent of any target.
+// It looks up each of its queries; without any it looks up defaults.dns_query. Record,
+// interval, timeout and retries set here apply to every query that does not set its own.
 type DNSProbeConfig struct {
 	Name     string   `yaml:"name" json:"name"`
 	Server   string   `yaml:"server" json:"server"`
+	Query    string   `yaml:"query" json:"query,omitempty"` // a single query; use queries for several
+	Record   string   `yaml:"record" json:"record,omitempty"`
+	Interval Duration `yaml:"interval" json:"interval_ms,omitempty"`
+	Timeout  Duration `yaml:"timeout" json:"timeout_ms,omitempty"`
+	Retries  *int     `yaml:"retries" json:"retries,omitempty"`
+
+	Queries []DNSQueryConfig `yaml:"queries" json:"queries,omitempty"`
+}
+
+// DNSQueryConfig is one name a DNS server is asked for. Zero fields inherit from the server.
+// In YAML a plain string ("- reddit.com") is a query with no overrides.
+type DNSQueryConfig struct {
 	Query    string   `yaml:"query" json:"query"`
 	Record   string   `yaml:"record" json:"record,omitempty"`
 	Interval Duration `yaml:"interval" json:"interval_ms,omitempty"`
 	Timeout  Duration `yaml:"timeout" json:"timeout_ms,omitempty"`
 	Retries  *int     `yaml:"retries" json:"retries,omitempty"`
+}
+
+// UnmarshalYAML accepts a plain host name or a mapping with the fields of DNSQueryConfig.
+func (q *DNSQueryConfig) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		*q = DNSQueryConfig{Query: n.Value}
+		return nil
+	}
+	if n.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: a query is a host name or a mapping with query, record, interval, timeout and retries", n.Line)
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		switch k := n.Content[i].Value; k {
+		case "query", "record", "interval", "timeout", "retries":
+		default:
+			return fmt.Errorf("line %d: field %s not found in dns query", n.Content[i].Line, k)
+		}
+	}
+	type plain DNSQueryConfig
+	var v plain
+	if err := n.Decode(&v); err != nil {
+		return err
+	}
+	*q = DNSQueryConfig(v)
+	return nil
 }
 
 // LoadOptions controls Load.

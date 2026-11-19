@@ -703,3 +703,51 @@ func TestTCPRetriesAreRecorded(t *testing.T) {
 		t.Fatalf("sample %+v", e.Sample)
 	}
 }
+
+func TestSyncDNSRunsOneProbePerQuery(t *testing.T) {
+	s, _, _ := newTestScheduler(t, nil, nil)
+	cfg := func(queries ...string) []config.DNSProbe {
+		var qs []config.DNSQueryConfig
+		for _, q := range queries {
+			qs = append(qs, config.DNSQueryConfig{Query: q})
+		}
+		ps, err := config.ResolveDNSProbe(config.DNSProbeConfig{Name: "home", Server: "127.0.0.1:1", Queries: qs, Interval: config.Duration(time.Hour)},
+			config.Defaults{DNSTimeout: config.Duration(time.Second), DNSQuery: "google.com"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ps
+	}
+	if err := s.SyncConfig(nil, cfg("reddit.com")); err != nil {
+		t.Fatal(err)
+	}
+	one := s.DNSStates()
+	if len(one) != 1 || one[0].Spec.Key() != "dns|home" {
+		t.Fatalf("single query: %+v", one)
+	}
+	if err := s.SyncConfig(nil, cfg("reddit.com", "apnews.com", "facebook.com")); err != nil {
+		t.Fatal(err)
+	}
+	three := s.DNSStates()
+	if len(three) != 3 {
+		t.Fatalf("three queries: %d probes", len(three))
+	}
+	ids := map[int64]bool{}
+	for _, d := range three {
+		if !d.Spec.Multi || ids[d.ProbeID] || d.ProbeID == one[0].ProbeID {
+			t.Errorf("probe %+v: want a separate history per query", d)
+		}
+		ids[d.ProbeID] = true
+	}
+	if three[0].Spec.Label() != "home · reddit.com" {
+		t.Errorf("first label %q", three[0].Spec.Label())
+	}
+	// removing one query keeps the others running with their histories
+	if err := s.SyncConfig(nil, cfg("reddit.com", "facebook.com")); err != nil {
+		t.Fatal(err)
+	}
+	two := s.DNSStates()
+	if len(two) != 2 || two[0].ProbeID != three[0].ProbeID || two[1].ProbeID != three[2].ProbeID {
+		t.Errorf("after removing a query: %+v", two)
+	}
+}

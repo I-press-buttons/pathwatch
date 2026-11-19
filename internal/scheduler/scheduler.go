@@ -289,9 +289,9 @@ func (s *Scheduler) SyncConfig(targets []config.Target, dns []config.DNSProbe) e
 }
 
 func (s *Scheduler) syncDNS(list []config.DNSProbe) error {
-	want := map[string]config.DNSProbe{}
+	want := map[string]config.DNSProbe{} // by probe key: a server with several queries runs one probe each
 	for _, d := range list {
-		want[d.Name] = d
+		want[d.Key()] = d
 	}
 	s.mu.Lock()
 	for name, e := range s.dns {
@@ -500,7 +500,7 @@ func (s *Scheduler) DNSProbes() []analyze.ProbeInfo {
 	defer s.mu.Unlock()
 	var out []analyze.ProbeInfo
 	for _, e := range s.dns {
-		out = append(out, analyze.ProbeInfo{ID: e.ref.ID, Type: config.ProbeDNS, Label: e.spec.Name})
+		out = append(out, analyze.ProbeInfo{ID: e.ref.ID, Type: config.ProbeDNS, Label: e.spec.Label()})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -520,7 +520,13 @@ func (s *Scheduler) DNSStates() []DNSState {
 	for _, e := range s.dns {
 		out = append(out, DNSState{ProbeID: e.ref.ID, Spec: e.spec})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ProbeID < out[j].ProbeID })
+	// grouped by DNS server, each server's queries in the order they were added
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Spec.Name != out[j].Spec.Name {
+			return out[i].Spec.Name < out[j].Spec.Name
+		}
+		return out[i].ProbeID < out[j].ProbeID
+	})
 	return out
 }
 

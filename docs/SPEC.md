@@ -446,15 +446,19 @@ targets:
       override:
         end-loss: { threshold_pct: 10 }
 
-dns_probes:                           # a probe without query looks up defaults.dns_query
+dns_probes:                           # one entry per DNS server; each query is its own probe
   - name: home-resolver
     server: 192.168.1.1:53
-    record: A
-  - name: cloudflare
+    record: A                         # record, interval, timeout, retries: defaults for its queries
+    interval: 30s
+    queries:
+      - reddit.com
+      - apnews.com
+      - query: facebook.com           # a query can override any of them
+        record: AAAA
+        interval: 10s
+  - name: cloudflare                  # no queries: looks up defaults.dns_query
     server: 1.1.1.1
-  - name: quad9-apnews
-    server: 9.9.9.9
-    query: apnews.com                 # per-probe query
 
 alerts:
   rules:

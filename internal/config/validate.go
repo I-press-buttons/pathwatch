@@ -141,15 +141,21 @@ func (c *Config) Validate() error {
 		}
 	}
 	dnsNames := map[string]bool{}
+	dnsQueries := 0
 	for i, dc := range c.DNSProbes {
-		if _, err := ResolveDNSProbe(dc, c.Defaults); err != nil {
+		ps, err := ResolveDNSProbe(dc, c.Defaults)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("dns_probes[%d]: %w", i, err))
 		}
+		dnsQueries += len(ps)
 		key := strings.ToLower(dc.Name)
 		if dnsNames[key] {
 			add("dns_probes[%d]: duplicate name %q", i, dc.Name)
 		}
 		dnsNames[key] = true
+	}
+	if dnsQueries > MaxDNSQueriesTotal {
+		add("too many DNS queries across all DNS probes (%d, max %d)", dnsQueries, MaxDNSQueriesTotal)
 	}
 	errs = append(errs, c.validateAlerts()...)
 	return errors.Join(errs...)

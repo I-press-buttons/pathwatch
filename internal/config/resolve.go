@@ -88,22 +88,41 @@ func (p Probe) Label() string {
 	return p.Type
 }
 
-// DNSProbe is a resolved DNS resolver probe.
+// DNSProbe is one resolved DNS lookup: a query sent to one server. A DNS server with several
+// queries resolves to one DNSProbe per query, each with its own history and alerts.
 type DNSProbe struct {
-	Name     string
+	Name     string // the DNS server entry's name
 	Server   string // host:port
 	Query    string
 	Record   string // A | AAAA
 	Interval time.Duration
 	Timeout  time.Duration
 	Retries  int
+	// Multi is set when the server has more than one query. A server with a single query
+	// keeps the key it always had ("dns|<name>"), so its history survives the upgrade.
+	Multi bool
 }
 
 // Key is the stable identity of the DNS probe.
-func (d DNSProbe) Key() string { return "dns|" + d.Name }
+func (d DNSProbe) Key() string {
+	if !d.Multi {
+		return "dns|" + d.Name
+	}
+	return "dns|" + d.Name + "|" + d.Record + "|" + d.Query
+}
 
-// Label is the human readable description.
-func (d DNSProbe) Label() string { return d.Name }
+// Label is the human readable description: the server name, plus the query when the server
+// has several ("home · reddit.com", "home · reddit.com AAAA").
+func (d DNSProbe) Label() string {
+	if !d.Multi {
+		return d.Name
+	}
+	l := d.Name + " · " + d.Query
+	if d.Record != "A" {
+		l += " " + d.Record
+	}
+	return l
+}
 
 var (
 	nameRe     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._ -]{0,62}$`)
@@ -401,59 +420,92 @@ func resolveTCP(pc ProbeConfig, tc TargetConfig, d Defaults) (Probe, error) {
 	return p, nil
 }
 
-// ResolveDNSProbe applies defaults to a DNS probe config and validates it.
-func ResolveDNSProbe(dc DNSProbeConfig, d Defaults) (DNSProbe, error) {
-	p := DNSProbe{
-		Name:     dc.Name,
-		Server:   dc.Server,
-		Query:    strings.TrimSpace(dc.Query),
-		Record:   strings.ToUpper(dc.Record),
-		Interval: pick(dc.Interval, d.DNSInterval),
-		Timeout:  pick(dc.Timeout, d.DNSTimeout),
-		Retries:  pickRetries(d.Retries, dc.Retries),
+// ResolveDNSProbe applies defaults to a DNS server config and validates it. It returns one
+// DNSProbe per query (one for the shared query when the server lists none).
+func ResolveDNSProbe(dc DNSProbeConfig, d Defaults) ([]DNSProbe, error) {
+	name := dc.Name
+	if !ValidName(name) {
+		return nil, fmt.Errorf("dns probe: invalid name %q", dc.Name)
 	}
-	if !ValidName(p.Name) {
-		return p, fmt.Errorf("dns probe: invalid name %q", dc.Name)
+	fail := func(f string, a ...any) ([]DNSProbe, error) {
+		return nil, fmt.Errorf("dns probe %q: %s", name, fmt.Sprintf(f, a...))
 	}
-	if err := checkRetries(p.Retries); err != nil {
-		return p, fmt.Errorf("dns probe %q: %v", p.Name, err)
+	server := strings.TrimSpace(dc.Server)
+	if server == "" {
+		return fail("server is required (host:port)")
 	}
-	if p.Record == "" {
-		p.Record = "A"
-	}
-	if !validRecs[p.Record] {
-		return p, fmt.Errorf("dns probe %q: record must be A or AAAA", p.Name)
-	}
-	if p.Server == "" {
-		return p, fmt.Errorf("dns probe %q: server is required (host:port)", p.Name)
-	}
-	if _, _, err := net.SplitHostPort(p.Server); err != nil {
-		if ap, perr := netip.ParseAddr(strings.Trim(p.Server, "[]")); perr == nil {
-			p.Server = net.JoinHostPort(ap.String(), "53")
-		} else if !strings.Contains(p.Server, ":") && ValidHost(p.Server) {
-			p.Server = net.JoinHostPort(p.Server, "53")
+	if _, _, err := net.SplitHostPort(server); err != nil {
+		if ap, perr := netip.ParseAddr(strings.Trim(server, "[]")); perr == nil {
+			server = net.JoinHostPort(ap.String(), "53")
+		} else if !strings.Contains(server, ":") && ValidHost(server) {
+			server = net.JoinHostPort(server, "53")
 		} else {
-			return p, fmt.Errorf("dns probe %q: invalid server %q", p.Name, dc.Server)
+			return fail("invalid server %q", dc.Server)
 		}
 	}
-	if p.Query == "" {
-		p.Query = strings.TrimSpace(d.DNSQuery)
+	queries := dc.Queries
+	if strings.TrimSpace(dc.Query) != "" {
+		if len(queries) > 0 {
+			return fail("set either query or queries, not both")
+		}
+		queries = []DNSQueryConfig{{Query: dc.Query}}
 	}
-	if p.Query == "" {
-		return p, fmt.Errorf("dns probe %q: query is required (set it on the probe or as defaults.dns_query)", p.Name)
+	if len(queries) > MaxDNSQueries {
+		return fail("too many queries (%d, max %d)", len(queries), MaxDNSQueries)
 	}
-	q, err := NormalizeHost(p.Query)
-	if err != nil {
-		return p, fmt.Errorf("dns probe %q: invalid query %q", p.Name, p.Query)
+	if len(queries) == 0 {
+		queries = []DNSQueryConfig{{}} // the shared query
 	}
-	p.Query = q
-	if p.Interval < time.Second {
-		return p, fmt.Errorf("dns probe %q: interval too small (minimum 1s)", p.Name)
+	out := make([]DNSProbe, 0, len(queries))
+	seen := map[string]bool{}
+	for _, qc := range queries {
+		p := DNSProbe{
+			Name:     name,
+			Server:   server,
+			Query:    strings.TrimSpace(qc.Query),
+			Record:   strings.ToUpper(strings.TrimSpace(qc.Record)),
+			Interval: pick(qc.Interval, dc.Interval, d.DNSInterval),
+			Timeout:  pick(qc.Timeout, dc.Timeout, d.DNSTimeout),
+			Retries:  pickRetries(d.Retries, qc.Retries, dc.Retries),
+			Multi:    len(queries) > 1,
+		}
+		if p.Record == "" {
+			p.Record = strings.ToUpper(strings.TrimSpace(dc.Record))
+		}
+		if p.Record == "" {
+			p.Record = "A"
+		}
+		if p.Query == "" {
+			p.Query = strings.TrimSpace(d.DNSQuery)
+		}
+		if p.Query == "" {
+			return fail("query is required (set it on the probe or as defaults.dns_query)")
+		}
+		q, err := NormalizeHost(p.Query)
+		if err != nil {
+			return fail("invalid query %q", p.Query)
+		}
+		p.Query = q
+		if !validRecs[p.Record] {
+			return fail("record must be A or AAAA (query %s)", p.Query)
+		}
+		if err := checkRetries(p.Retries); err != nil {
+			return fail("%v (query %s)", err, p.Query)
+		}
+		if p.Interval < time.Second {
+			return fail("interval too small (minimum 1s, query %s)", p.Query)
+		}
+		if p.Timeout <= 0 {
+			return fail("timeout must be positive (query %s)", p.Query)
+		}
+		k := p.Record + " " + strings.TrimSuffix(p.Query, ".")
+		if seen[k] {
+			return fail("duplicate query %s %s", p.Query, p.Record)
+		}
+		seen[k] = true
+		out = append(out, p)
 	}
-	if p.Timeout <= 0 {
-		return p, fmt.Errorf("dns probe %q: timeout must be positive", p.Name)
-	}
-	return p, nil
+	return out, nil
 }
 
 // UITargetRequest is the payload for creating a UI-managed target.
@@ -535,11 +587,11 @@ func (c *Config) ResolveTargets() []Target {
 func (c *Config) ResolveDNSProbes() []DNSProbe {
 	out := make([]DNSProbe, 0, len(c.DNSProbes))
 	for _, dc := range c.DNSProbes {
-		p, err := ResolveDNSProbe(dc, c.Defaults)
+		ps, err := ResolveDNSProbe(dc, c.Defaults)
 		if err != nil {
 			continue
 		}
-		out = append(out, p)
+		out = append(out, ps...)
 	}
 	return out
 }

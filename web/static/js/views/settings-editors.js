@@ -29,6 +29,19 @@ function textArea(label, { value, placeholder, hint, rows = 4 } = {}) {
   return { el: field(label, el, hint, { cls: 'span3' }), input: el, label, get: () => el.value, set: (v) => { el.value = v || ''; } };
 }
 
+/** Fallback when an older server sends no presets. */
+const DNS_PRESETS = ['google.com', 'youtube.com', 'facebook.com', 'reddit.com', 'wikipedia.org',
+  'amazon.com', 'apnews.com', 'cloudflare.com', 'microsoft.com', 'apple.com'];
+
+/** A host-name input that offers the popular DNS query presets and still takes any name. */
+function dnsQueryField(label, settings, opts) {
+  const f = textField(label, opts);
+  const id = 'dnsq-' + Math.random().toString(36).slice(2, 9);
+  f.input.setAttribute('list', id);
+  f.el.append(h('datalist', { id }, (settings.dns_query_presets || DNS_PRESETS).map((q) => h('option', { value: q }))));
+  return f;
+}
+
 const toggle = (fs, on) => { fs.classList.toggle('disabled', !on); fs.querySelectorAll('input,select,textarea,button').forEach((x) => { x.disabled = !on; }); };
 
 /**
@@ -119,12 +132,14 @@ function defaultsSection(onChange) {
         dns_timeout_ms: durField('Timeout', { value: v.dns_timeout_ms, unit: 's' }),
         retries: numField('Retries', { value: v.retries, min: 0, max, integer: true, hint: `0–${max}` }),
       };
+      const dnsQuery = dnsQueryField('Shared query', settings, { value: v.dns_query, placeholder: 'google.com',
+        hint: 'Looked up by every DNS probe without its own query, so all servers answer the same name.' });
       const group = (label, ...fs) => h('fieldset', { class: 'section' }, h('legend', null, label), h('div', { class: 'grid-fields' }, fs.map((x) => x.el)));
       const body = h('div', null,
         group('Hop trace (ICMP)', f.icmp_interval_ms, f.icmp_timeout_ms, f.max_hops, f.path_rediscovery_ms),
         group('HTTP probes', f.http_interval_ms, f.http_timeout_ms),
         group('TCP probes', f.tcp_interval_ms, f.tcp_timeout_ms),
-        group('DNS probes', f.dns_interval_ms, f.dns_timeout_ms),
+        group('DNS probes', dnsQuery, f.dns_interval_ms, f.dns_timeout_ms),
         h('fieldset', { class: 'section' }, h('legend', null, 'Retries'),
           h('div', { class: 'grid-fields' }, f.retries.el,
             h('p', { class: 'hint span3' }, 'A failed HTTP, TCP or DNS probe is retried, while time remains before the next one is due, before the failure is recorded. Hop probes are never retried: an unanswered probe is the loss being measured.'))),
@@ -135,6 +150,8 @@ function defaultsSection(onChange) {
           const E = errorList();
           const out = clone(v);
           for (const [k, fld] of Object.entries(f)) { const x = E.num(fld); out[k] = x == null ? 0 : x; }
+          out.dns_query = dnsQuery.get();
+          if (/[\s/:@]/.test(out.dns_query)) E.add('Shared query: enter a host name such as google.com.');
           return { value: out, errs: E.errs };
         },
       };
@@ -237,18 +254,20 @@ function alertsSection(onChange) {
 }
 
 function dnsSection(onChange) {
-  return section({
+  let showShared = null; // updates the shared-query hints without discarding unsaved edits
+  const sec = section({
     key: 'dns_probes', title: 'DNS probe setup', onChange,
     intro: 'Query a resolver directly (your router, Pi-hole or ISP resolver) to catch slow or failing DNS independently of any target.',
     build(settings) {
       const D = settings.defaults.value;
+      let shared = D.dns_query || 'google.com';
       const list = h('div', { class: 'probe-list' });
       const items = [];
       const empty = h('p', { class: 'muted small' }, 'No DNS probes.');
       function addProbe(p, focus) {
         const name = textField('Name', { value: p.name, required: true, maxlength: 63, placeholder: 'home-resolver' });
         const server = textField('Server', { value: p.server, required: true, placeholder: '192.168.1.1 or dns.example:53' });
-        const query = textField('Query', { value: p.query, required: true, placeholder: 'example.com' });
+        const query = dnsQueryField('Query', settings, { value: p.query, placeholder: `Shared: ${shared}` });
         const record = selectField('Record', [['A', 'A (IPv4)'], ['AAAA', 'AAAA (IPv6)']], { value: (p.record || 'A').toUpperCase() });
         const interval = durField('Interval', { value: p.interval_ms, unit: 's', inherit: D.dns_interval_ms, min: 1000 });
         const timeout = durField('Timeout', { value: p.timeout_ms, unit: 's', inherit: D.dns_timeout_ms });
@@ -258,10 +277,12 @@ function dnsSection(onChange) {
           h('div', { class: 'probe-head' }, h('strong', null, 'DNS probe'), h('span', { class: 'grow' }),
             h('button', { class: 'btn sm danger', type: 'button', onclick: () => { items.splice(items.indexOf(item), 1); item.row.remove(); empty.hidden = items.length > 0; } }, 'Remove')),
           h('div', { class: 'grid-fields' }, name.el, server.el, query.el, record.el, interval.el, timeout.el, retries.el));
+        item.query = query;
         item.collect = (E) => {
           const o = clone(p);
           o.name = name.get(); o.server = server.get(); o.query = query.get(); o.record = record.get();
-          if (!o.name || !o.server || !o.query) E.add('DNS probe: name, server and query are required.');
+          if (!o.query) delete o.query; // blank follows the shared query
+          if (!o.name || !o.server) E.add('DNS probe: name and server are required.');
           setOrDelete(o, 'interval_ms', E.num(interval));
           setOrDelete(o, 'timeout_ms', E.num(timeout));
           setOrDelete(o, 'retries', E.num(retries));
@@ -274,10 +295,20 @@ function dnsSection(onChange) {
       }
       for (const p of settings.dns_probes.value || []) addProbe(p);
       empty.hidden = items.length > 0;
+      const useShared = h('button', { class: 'btn sm', type: 'button', title: 'Clear every probe\'s own query so all servers look up the shared one',
+        onclick: () => items.forEach((i) => i.query.set('')) });
+      showShared = (q) => {
+        shared = q || 'google.com';
+        useShared.textContent = `Use shared query (${shared}) for all`;
+        items.forEach((i) => { i.query.input.placeholder = `Shared: ${shared}`; });
+      };
+      showShared(D.dns_query);
       return {
         body: h('div', null, empty, list,
-          h('button', { class: 'btn sm', type: 'button', onclick: () => addProbe({ record: 'A' }, true) }, '+ Add DNS probe'),
-          h('p', { class: 'hint' }, 'Blank interval, timeout and retries follow the probe defaults. Renaming a probe starts a new history.')),
+          h('div', { class: 'row' },
+            h('button', { class: 'btn sm', type: 'button', onclick: () => addProbe({ record: 'A' }, true) }, '+ Add DNS probe'),
+            useShared),
+          h('p', { class: 'hint' }, 'A blank query uses the shared query from Probe defaults, so every server answers the same name and their times compare fairly. Blank interval, timeout and retries follow the probe defaults too. Renaming a probe starts a new history.')),
         collect() {
           const E = errorList();
           return { value: items.map((i) => i.collect(E)), errs: E.errs };
@@ -285,6 +316,8 @@ function dnsSection(onChange) {
       };
     },
   });
+  sec.sharedChanged = (settings) => { if (showShared) showShared(settings.defaults.value.dns_query); };
+  return sec;
 }
 
 function notifySection(onChange) {
@@ -541,8 +574,10 @@ export function settingsEditors({ onSaved } = {}) {
     onSaved && onSaved(s);
   };
   alerts = alertsSection(changed);
-  const sections = [defaultsSection(changed), statusSection(changed), alerts, notifySection(changed), maintenanceSection(changed),
-    heartbeatSection(changed), dnsSection(changed), retentionSection(changed), enrichSection(changed)];
+  const dns = dnsSection(changed);
+  const changedDefaults = (s, key) => { dns.sharedChanged(s); changed(s, key); }; // DNS probes show the shared query
+  const sections = [defaultsSection(changedDefaults), statusSection(changed), alerts, notifySection(changed), maintenanceSection(changed),
+    heartbeatSection(changed), dns, retentionSection(changed), enrichSection(changed)];
   return {
     els: sections.map((s) => s.el),
     async load() {

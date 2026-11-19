@@ -235,6 +235,7 @@ config file until reverted. Changes apply immediately (no restart).
   "retention":  {"source": "file", "value": {"raw_retention_ms": 604800000, "rollup_1m_retention_ms": 7776000000, "rollup_1h_retention_ms": 0}, "file": {...}},
   "enrich":     {"source": "file", "value": {"reverse_dns": true}, "file": {...}},
   "notify_env_prefix": "PATHWATCH_NOTIFY_",
+  "dns_query_presets": ["google.com", "youtube.com", "facebook.com", ...],
   "channels": {"webhook": true, "email": false},
   "rule_types": ["cert_expiry", "dns_failure", ...],
   "max_retries": 10
@@ -244,11 +245,15 @@ config file until reverted. Changes apply immediately (no restart).
 restores. Value shapes:
 - `defaults`: `icmp_interval_ms`, `icmp_timeout_ms`, `tcp_interval_ms`, `tcp_timeout_ms`,
   `http_interval_ms`, `http_timeout_ms`, `dns_interval_ms`, `dns_timeout_ms`,
-  `path_rediscovery_ms`, `max_hops`, `retries` (0 = built-in default, except `retries`).
+  `path_rediscovery_ms`, `max_hops`, `retries` (0 = built-in default, except `retries`), and
+  `dns_query`: the name DNS probes without their own query look up (blank = `google.com`).
 - `alerts.rules[]`: `name`, `type`, `enabled`, `notify`, and the parameters of the type:
   `consecutive`, `metric`, `multiplier`, `min_delta_ms`, `sustain_ms`, `baseline_window_ms`,
   `min_baseline_ms`, `threshold_pct`, `window_ms`, `warn_before_ms`.
-- `dns_probes[]`: `name`, `server`, `query`, `record`, `interval_ms`, `timeout_ms`, `retries`.
+- `dns_probes[]`: `name`, `server`, `query`, `record`, `interval_ms`, `timeout_ms`, `retries`. A
+  blank or missing `query` uses `defaults.dns_query`.
+
+`dns_query_presets` lists the popular names the UI offers as DNS queries.
 - `maintenance_windows[]`: `name`, `days` (`mon`..`sun`), `start` and `end` (`HH:MM`; an end at
   or before the start crosses midnight), `timezone` (IANA name, default UTC).
 - `notify`: `webhook` and `email` (`null` = channel off) and `outbox_max_age_ms`.

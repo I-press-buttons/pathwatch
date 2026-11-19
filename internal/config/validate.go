@@ -75,6 +75,9 @@ func (c *Config) Validate() error {
 			add("defaults.%s %v is too small (minimum 1s)", name, d.D())
 		}
 	}
+	if q := strings.TrimSpace(df.DNSQuery); q != "" && !ValidHost(q) {
+		add("defaults.dns_query %q is not a valid host name", df.DNSQuery)
+	}
 	if df.PathRediscovery.D() > 0 && df.PathRediscovery.D() < 10*time.Second {
 		add("defaults.path_rediscovery %v is too small (minimum 10s)", df.PathRediscovery.D())
 	}

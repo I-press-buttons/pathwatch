@@ -606,7 +606,8 @@ func (s *Server) handleDNS(w http.ResponseWriter, r *http.Request) {
 				fl, b := c.FailPct()
 				pts = append(pts, []any{ts, fp(avg, a), fp(fl, b)})
 			}
-			out = append(out, map[string]any{"probe_id": d.ProbeID, "name": d.Spec.Name, "server": d.Spec.Server, "query": d.Spec.Query, "points": pts})
+			out = append(out, map[string]any{"probe_id": d.ProbeID, "name": d.Spec.Name, "label": d.Spec.Label(),
+				"server": d.Spec.Server, "query": d.Spec.Query, "record": d.Spec.Record, "points": pts})
 		}
 	}
 	writeJSON(w, http.StatusOK, out)

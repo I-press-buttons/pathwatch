@@ -66,7 +66,9 @@ type dnsHealthJSON struct {
 // dnsHealth is what the verdict knows about one DNS probe.
 type dnsHealth struct {
 	ProbeID   int64
-	Name      string
+	Name      string // the probe: "home", or "home · reddit.com" when the server has several queries
+	Resolver  string // the DNS server entry's name ("home"); empty means Name
+	Query     string // the name looked up
 	Server    string
 	Local     bool
 	Samples   int64
@@ -89,7 +91,14 @@ func (d dnsHealth) healthy() bool {
 	return !d.failing() && d.Samples > 0 && (d.FailPct == nil || *d.FailPct < 50)
 }
 
-func (d dnsHealth) label() string { return d.Name + " (" + d.Server + ")" }
+// label names the resolver: "home (192.168.1.1:53)".
+func (d dnsHealth) label() string {
+	n := d.Resolver
+	if n == "" {
+		n = d.Name
+	}
+	return n + " (" + d.Server + ")"
+}
 
 func (d dnsHealth) state() string {
 	switch {
@@ -409,7 +418,7 @@ func networkVerdict(in netInput) (out networkJSON) {
 		parts = append(parts, fmt.Sprintf("%d %s no recent results.", nodata, pickN(nodata, "target has", "targets have")))
 	}
 	if len(okDNS) > 0 {
-		parts = append(parts, dnsLabels(okDNS)+" "+pickN(len(okDNS), "answers", "answer")+".")
+		parts = append(parts, dnsLabels(okDNS)+" "+pickN(resolverCount(okDNS), "answers", "answer")+".")
 	}
 	if !anyLocal(in.DNS) {
 		parts = append(parts, "Add a DNS probe for your own resolver (Settings → DNS probe setup) so DNS outages show up here too.")
@@ -419,6 +428,40 @@ func networkVerdict(in netInput) (out networkJSON) {
 }
 
 func localDNSVerdict(out networkJSON, failing, okDNS, publicDNS []dnsHealth, affected []netTarget, fresh int) networkJSON {
+	// A resolver that still answers some of its queries is up: only those names fail.
+	answers := map[string][]string{} // server -> names it answers
+	for _, o := range okDNS {
+		answers[o.Server] = append(answers[o.Server], o.Query)
+	}
+	var down, names []dnsHealth
+	for _, f := range failing {
+		if len(answers[f.Server]) > 0 && f.Query != "" {
+			names = append(names, f)
+		} else {
+			down = append(down, f)
+		}
+	}
+	if len(down) == 0 {
+		d := names[0]
+		out.Severity, out.Code, out.Where = "warn", "dns_local_name", where("dns")
+		out.Headline = "Your DNS resolver " + d.label() + " fails to look up " + d.Query
+		out.Detail = "It still answers " + joinAnd(answers[d.Server]) + ", so the resolver itself is up. The lookup of " + d.Query
+		if d.LastErr != "" {
+			out.Detail += " fails (" + d.LastErr + ")"
+		} else {
+			out.Detail += " fails"
+		}
+		out.Detail += ": check the resolver's blocklists and the name, or whether that domain's own DNS has a problem."
+		if len(names) > 1 {
+			more := make([]string, 0, len(names)-1)
+			for _, n := range names[1:] {
+				more = append(more, n.Query+" on "+n.label())
+			}
+			out.Detail += " Also failing: " + joinAnd(more) + "."
+		}
+		return out
+	}
+	failing = down
 	d := failing[0]
 	out.Severity, out.Code, out.Where = "crit", "dns_local_down", where("dns")
 	switch dnsErrKind(d.LastErr) {
@@ -442,14 +485,20 @@ func localDNSVerdict(out networkJSON, failing, okDNS, publicDNS []dnsHealth, aff
 	if d.LastErr != "" && dnsErrKind(d.LastErr) != "rcode" {
 		out.Detail += ` Last error: "` + d.LastErr + `".`
 	}
-	if len(failing) > 1 {
-		out.Detail += " " + dnsLabels(failing[1:]) + " " + pickN(len(failing)-1, "fails", "fail") + " too."
+	var otherDown []dnsHealth // other resolvers that are down (not more queries of this one)
+	for _, f := range failing[1:] {
+		if f.label() != d.label() {
+			otherDown = append(otherDown, f)
+		}
+	}
+	if n := resolverCount(otherDown); n > 0 {
+		out.Detail += " " + dnsLabels(otherDown) + " " + pickN(n, "fails", "fail") + " too."
 	}
 	switch {
 	case len(okDNS) > 0:
-		out.Detail += " " + dnsLabels(okDNS) + " still " + pickN(len(okDNS), "answers", "answer") + ", so the internet is reachable: the problem is your resolver."
+		out.Detail += " " + dnsLabels(okDNS) + " still " + pickN(resolverCount(okDNS), "answers", "answer") + ", so the internet is reachable: the problem is your resolver."
 	case len(publicDNS) > 0:
-		out.Detail += " " + dnsLabels(publicDNS) + " " + pickN(len(publicDNS), "fails", "fail") + " as well."
+		out.Detail += " " + dnsLabels(publicDNS) + " " + pickN(resolverCount(publicDNS), "fails", "fail") + " as well."
 	}
 	if fresh > 0 && len(affected) == 0 {
 		out.Detail += " Your targets are reachable, so the network connection itself works."
@@ -539,10 +588,23 @@ func affectedText(list []netTarget) string {
 
 func dnsLabels(list []dnsHealth) string {
 	names := make([]string, 0, len(list))
+	seen := map[string]bool{}
 	for _, d := range list {
-		names = append(names, d.label())
+		if l := d.label(); !seen[l] { // one entry per resolver, however many of its queries fail
+			seen[l] = true
+			names = append(names, l)
+		}
 	}
 	return joinAnd(names)
+}
+
+// resolverCount is the number of distinct resolvers in list (a resolver can have several queries).
+func resolverCount(list []dnsHealth) int {
+	seen := map[string]bool{}
+	for _, d := range list {
+		seen[d.label()] = true
+	}
+	return len(seen)
 }
 
 func joinAnd(parts []string) string {
@@ -603,7 +665,7 @@ func (s *Server) dnsHealthOf(ctx context.Context, active []store.Alert) []dnsHea
 	}
 	var out []dnsHealth
 	for _, st := range s.d.Sched.DNSStates() {
-		h := dnsHealth{ProbeID: st.ProbeID, Name: st.Spec.Name, Server: st.Spec.Server, Local: localResolver(st.Spec.Server),
+		h := dnsHealth{ProbeID: st.ProbeID, Name: st.Spec.Label(), Resolver: st.Spec.Name, Query: st.Spec.Query, Server: st.Spec.Server, Local: localResolver(st.Spec.Server),
 			FailAlert: firing[st.ProbeID]["dns_failure"], SlowAlert: firing[st.ProbeID]["dns_latency"]}
 		if pc, err := s.d.Store.ProbeCells(ctx, st.ProbeID, config.ProbeDNS, plan, store.CellOpts{NoHist: true}); err == nil {
 			t := pc.Total()

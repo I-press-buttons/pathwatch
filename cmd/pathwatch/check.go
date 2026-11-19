@@ -35,7 +35,7 @@ func checkConfigCmd(args []string) int {
 	fmt.Printf("%s: OK\n", path)
 	fmt.Printf("  listen:   %s (auth %s)\n", cfg.Listen, authSummary(cfg))
 	fmt.Printf("  database: %s\n", cfg.Storage.Path)
-	fmt.Printf("  targets:  %d, dns probes: %d, alert rules: %d\n", len(targets), len(dns), len(cfg.Alerts.Rules))
+	fmt.Printf("  targets:  %d, dns servers: %d (%d queries), alert rules: %d\n", len(targets), len(cfg.DNSProbes), len(dns), len(cfg.Alerts.Rules))
 	for _, t := range targets {
 		kinds := ""
 		if t.ICMP != nil {

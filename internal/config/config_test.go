@@ -451,3 +451,73 @@ dns_probes:
 		}
 	}
 }
+
+func TestDNSProbeNestedQueries(t *testing.T) {
+	y := `
+defaults:
+  dns_query: google.com
+dns_probes:
+  - name: home
+    server: 192.168.1.1
+    record: A
+    interval: 20s
+    queries:
+      - reddit.com
+      - query: apnews.com
+        record: AAAA
+        interval: 5s
+        retries: 2
+      - query: Facebook.com
+  - name: solo
+    server: 1.1.1.1
+    queries: [wikipedia.org]
+  - name: shared
+    server: 9.9.9.9
+`
+	c, err := Parse([]byte(y), env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := c.ResolveDNSProbes()
+	if len(ps) != 5 {
+		t.Fatalf("%d probes, want 5: %+v", len(ps), ps)
+	}
+	type want struct {
+		key, label, rec string
+		iv              time.Duration
+		retries         int
+	}
+	wants := []want{
+		{"dns|home|A|reddit.com", "home · reddit.com", "A", 20 * time.Second, 0},
+		{"dns|home|AAAA|apnews.com", "home · apnews.com AAAA", "AAAA", 5 * time.Second, 2},
+		{"dns|home|A|facebook.com", "home · facebook.com", "A", 20 * time.Second, 0},
+		{"dns|solo", "solo", "A", 30 * time.Second, 0},
+		{"dns|shared", "shared", "A", 30 * time.Second, 0},
+	}
+	for i, w := range wants {
+		p := ps[i]
+		if p.Key() != w.key || p.Label() != w.label || p.Record != w.rec || p.Interval != w.iv || p.Retries != w.retries {
+			t.Errorf("probe %d: key %q label %q record %s interval %v retries %d, want %+v", i, p.Key(), p.Label(), p.Record, p.Interval, p.Retries, w)
+		}
+	}
+	if ps[3].Query != "wikipedia.org" || ps[4].Query != "google.com" {
+		t.Errorf("queries %q %q", ps[3].Query, ps[4].Query)
+	}
+
+	bad := map[string]string{
+		"query and queries": "dns_probes:\n  - name: d\n    server: 1.1.1.1\n    query: a.com\n    queries: [b.com]\n",
+		"duplicate query":   "dns_probes:\n  - name: d\n    server: 1.1.1.1\n    queries: [a.com, A.com]\n",
+		"bad nested record": "dns_probes:\n  - name: d\n    server: 1.1.1.1\n    queries:\n      - query: a.com\n        record: MX\n",
+		"unknown field":     "dns_probes:\n  - name: d\n    server: 1.1.1.1\n    queries:\n      - query: a.com\n        bogus: 1\n",
+		"bad nested query":  "dns_probes:\n  - name: d\n    server: 1.1.1.1\n    queries: [\"http://a.com\"]\n",
+	}
+	for name, y := range bad {
+		if _, err := Parse([]byte(y), env(nil)); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+	// the same name as A and AAAA is two different questions
+	if _, err := Parse([]byte("dns_probes:\n  - name: d\n    server: 1.1.1.1\n    queries:\n      - a.com\n      - query: a.com\n        record: AAAA\n"), env(nil)); err != nil {
+		t.Errorf("A and AAAA of one name: %v", err)
+	}
+}

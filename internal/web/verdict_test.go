@@ -82,6 +82,21 @@ func TestNetworkVerdict(t *testing.T) {
 			in.Targets[0].Status = "alerting"
 			in.Targets[0].Diag = diagnosisJSON{Severity: "crit", Code: "http_failure", Where: where("dns"), Headline: "The host name does not resolve"}
 		}, code: "dns_local_down", severity: "crit", where: "dns", want: []string{"Affected: cloudflare"}},
+		{name: "local resolver fails one of its queries only", mod: func(in *netInput) {
+			in.DNS[0].Name, in.DNS[0].Resolver, in.DNS[0].Query = "adguard · google.com", "adguard", "google.com"
+			in.DNS = append(in.DNS, dnsHealth{ProbeID: 12, Name: "adguard · reddit.com", Resolver: "adguard", Query: "reddit.com",
+				Server: "192.168.1.5:53", Local: true, Samples: 10, FailPct: f64(100), LastErr: "rcode NXDOMAIN"})
+		}, code: "dns_local_name", severity: "warn", where: "dns",
+			want: []string{"Your DNS resolver adguard (192.168.1.5:53) fails to look up reddit.com", "still answers google.com", "rcode NXDOMAIN"},
+			not:  []string{"is not answering"}},
+		{name: "local resolver down names it once across its queries", mod: func(in *netInput) {
+			in.DNS[0].Name, in.DNS[0].Resolver, in.DNS[0].Query = "adguard · google.com", "adguard", "google.com"
+			in.DNS[0].FailPct, in.DNS[0].LastErr = f64(100), "i/o timeout"
+			in.DNS = append(in.DNS, dnsHealth{ProbeID: 12, Name: "adguard · reddit.com", Resolver: "adguard", Query: "reddit.com",
+				Server: "192.168.1.5:53", Local: true, Samples: 10, FailPct: f64(100), LastErr: "i/o timeout"})
+		}, code: "dns_local_down", severity: "crit", where: "dns",
+			want: []string{"Your DNS resolver adguard (192.168.1.5:53) is not answering", "quad9 (9.9.9.9:53) still answers"},
+			not:  []string{"fails too", "fail too"}},
 		{name: "a few failed lookups are not an outage", mod: func(in *netInput) { in.DNS[0].FailPct = f64(20) }, code: "ok", severity: "ok"},
 		{name: "one failed first lookup is neither healthy nor an outage", mod: func(in *netInput) { in.DNS[0].Samples, in.DNS[0].FailPct = 1, f64(100) },
 			code: "ok", severity: "ok", not: []string{"adguard (192.168.1.5:53) and"}},

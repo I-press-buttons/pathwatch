@@ -6,7 +6,7 @@ import { h, clear } from '../util.js';
 import { api } from '../api.js';
 import { panel, confirmDialog } from '../ui.js';
 import {
-  field, durField, numField, textField, selectField, checkField, errorList, setOrDelete, sourceBadge,
+  field, durField, numField, inUnit, textField, selectField, checkField, errorList, setOrDelete, sourceBadge,
   RULE_TYPES, paramField, ruleTypeLabel,
 } from '../forms.js';
 
@@ -28,6 +28,9 @@ function textArea(label, { value, placeholder, hint, rows = 4 } = {}) {
   if (value) el.value = value;
   return { el: field(label, el, hint, { cls: 'span3' }), input: el, label, get: () => el.value, set: (v) => { el.value = v || ''; } };
 }
+
+/** ms -> seconds, for an inherited placeholder. */
+const inUnitS = (ms) => (ms ? inUnit(ms, 's') : '');
 
 /** Fallback when an older server sends no presets. */
 const DNS_PRESETS = ['google.com', 'youtube.com', 'facebook.com', 'reddit.com', 'wikipedia.org',
@@ -253,65 +256,177 @@ function alertsSection(onChange) {
   });
 }
 
+/**
+ * A drop-down of check boxes for picking several DNS queries at once. Ticking a name adds a
+ * query line, unticking removes it; "Other" adds any name. has(q) / onPick(q, on) / onAdd(q)
+ * connect it to the query list.
+ */
+function queryPicker(presets, { has, onPick, onAdd }) {
+  const boxes = presets.map((q) => {
+    const cb = h('input', { type: 'checkbox', value: q, onchange: () => { onPick(q, cb.checked); sync(); } });
+    return h('label', { class: 'check' }, cb, q);
+  });
+  const other = h('input', { type: 'text', placeholder: 'other.example', 'aria-label': 'Another query name', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
+  const addOther = () => { const q = other.value.trim().toLowerCase(); if (q) { onAdd(q); other.value = ''; sync(); } };
+  other.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addOther(); } });
+  const summary = h('summary', { class: 'btn sm' });
+  const box = h('details', { class: 'multi-pick' }, summary,
+    h('div', { class: 'multi-pick-panel' },
+      h('div', { class: 'multi-pick-list' }, boxes),
+      h('div', { class: 'multi-pick-other' }, other, h('button', { class: 'btn sm', type: 'button', onclick: addOther }, 'Add')),
+      h('div', { class: 'multi-pick-foot' }, h('button', { class: 'btn sm primary', type: 'button', onclick: () => { box.open = false; } }, 'Done'))));
+  function sync() {
+    let n = 0;
+    boxes.forEach((l) => { const cb = l.firstChild; cb.checked = has(cb.value); if (cb.checked) n++; });
+    summary.textContent = n ? `Pick queries (${n} popular selected) ▾` : 'Pick queries ▾';
+  }
+  sync();
+  return { el: box, sync };
+}
+
 function dnsSection(onChange) {
   let showShared = null; // updates the shared-query hints without discarding unsaved edits
   const sec = section({
     key: 'dns_probes', title: 'DNS probe setup', onChange,
-    intro: 'Query a resolver directly (your router, Pi-hole or ISP resolver) to catch slow or failing DNS independently of any target.',
+    intro: 'Query a resolver directly (your router, Pi-hole or ISP resolver) to catch slow or failing DNS independently of any target. Each DNS server can look up several names; every query is its own probe with its own chart and alerts.',
     build(settings) {
       const D = settings.defaults.value;
+      const presets = settings.dns_query_presets || DNS_PRESETS;
+      const maxRetries = settings.max_retries || 10;
       let shared = D.dns_query || 'google.com';
       const list = h('div', { class: 'probe-list' });
-      const items = [];
-      const empty = h('p', { class: 'muted small' }, 'No DNS probes.');
-      function addProbe(p, focus) {
+      const servers = [];
+      const empty = h('p', { class: 'muted small' }, 'No DNS servers.');
+
+      function addServer(p, focus) {
         const name = textField('Name', { value: p.name, required: true, maxlength: 63, placeholder: 'home-resolver' });
         const server = textField('Server', { value: p.server, required: true, placeholder: '192.168.1.1 or dns.example:53' });
-        const query = dnsQueryField('Query', settings, { value: p.query, placeholder: `Shared: ${shared}` });
         const record = selectField('Record', [['A', 'A (IPv4)'], ['AAAA', 'AAAA (IPv6)']], { value: (p.record || 'A').toUpperCase() });
         const interval = durField('Interval', { value: p.interval_ms, unit: 's', inherit: D.dns_interval_ms, min: 1000 });
         const timeout = durField('Timeout', { value: p.timeout_ms, unit: 's', inherit: D.dns_timeout_ms });
-        const retries = numField('Retries', { value: p.retries, inherit: D.retries, min: 0, max: settings.max_retries || 10, integer: true });
-        const item = {};
-        item.row = h('div', { class: 'probe-row' },
-          h('div', { class: 'probe-head' }, h('strong', null, 'DNS probe'), h('span', { class: 'grow' }),
-            h('button', { class: 'btn sm danger', type: 'button', onclick: () => { items.splice(items.indexOf(item), 1); item.row.remove(); empty.hidden = items.length > 0; } }, 'Remove')),
-          h('div', { class: 'grid-fields' }, name.el, server.el, query.el, record.el, interval.el, timeout.el, retries.el));
-        item.query = query;
-        item.collect = (E) => {
+        const retries = numField('Retries', { value: p.retries, inherit: D.retries, min: 0, max: maxRetries, integer: true });
+        const qlist = h('div', { class: 'query-list' });
+        const noQueries = h('p', { class: 'muted small query-empty' });
+        const srv = { queries: [] };
+
+        const recLabel = () => (record.get() === 'AAAA' ? 'AAAA' : 'A');
+        function refreshInherit() {
+          const iv = interval.get(), to = timeout.get(), rt = retries.get();
+          for (const q of srv.queries) {
+            q.record.input.options[0].textContent = `Server (${recLabel()})`;
+            q.interval.input.placeholder = inUnitS(iv != null && !Number.isNaN(iv) ? iv : D.dns_interval_ms);
+            q.timeout.input.placeholder = inUnitS(to != null && !Number.isNaN(to) ? to : D.dns_timeout_ms);
+            q.retries.input.placeholder = String(rt != null && !Number.isNaN(rt) ? rt : (D.retries || 0));
+          }
+          noQueries.textContent = `No queries: this server looks up the shared query (${shared}).`;
+          noQueries.hidden = srv.queries.length > 0;
+        }
+        srv.refreshInherit = refreshInherit;
+        [record.input, interval.input, timeout.input, retries.input].forEach((x) => x.addEventListener('input', refreshInherit));
+
+        function addQuery(qc, focus) {
+          const query = dnsQueryField('Query', settings, { value: qc.query, required: true, placeholder: 'reddit.com' });
+          const qrec = selectField('Record', [['', 'Server (A)'], ['A', 'A (IPv4)'], ['AAAA', 'AAAA (IPv6)']], { value: (qc.record || '').toUpperCase() });
+          const qiv = durField('Interval', { value: qc.interval_ms, unit: 's', min: 1000 });
+          const qto = durField('Timeout', { value: qc.timeout_ms, unit: 's' });
+          const qrt = numField('Retries', { value: qc.retries, min: 0, max: maxRetries, integer: true });
+          const q = { query, record: qrec, interval: qiv, timeout: qto, retries: qrt };
+          q.row = h('div', { class: 'query-row' },
+            h('div', { class: 'grid-fields' }, query.el, qrec.el, qiv.el, qto.el, qrt.el),
+            h('button', { class: 'btn sm danger query-remove', type: 'button', title: 'Remove this query', 'aria-label': 'Remove this query',
+              onclick: () => removeQuery(q) }, '×'));
+          query.input.addEventListener('change', () => picker.sync());
+          srv.queries.push(q);
+          qlist.append(q.row);
+          refreshInherit();
+          if (focus) query.input.focus();
+          return q;
+        }
+        function removeQuery(q) {
+          srv.queries.splice(srv.queries.indexOf(q), 1);
+          q.row.remove();
+          refreshInherit();
+          picker.sync();
+        }
+        const norm = (x) => x.trim().toLowerCase().replace(/\.$/, '');
+        const findQuery = (name) => srv.queries.filter((q) => norm(q.query.get()) === norm(name));
+        const picker = queryPicker(presets, {
+          has: (name) => findQuery(name).length > 0,
+          onPick: (name, on) => { if (on) { if (!findQuery(name).length) addQuery({ query: name }); } else findQuery(name).forEach(removeQuery); },
+          onAdd: (name) => { addQuery({ query: name }); },
+        });
+        srv.setQueries = (qs) => {
+          srv.queries.slice().forEach((q) => { q.row.remove(); });
+          srv.queries.length = 0;
+          qs.forEach((qc) => addQuery(qc));
+          refreshInherit();
+          picker.sync();
+        };
+        srv.queryConfigs = () => srv.queries.map((q) => {
+          const o = { query: q.query.get() };
+          if (q.record.get()) o.record = q.record.get();
+          for (const [k, f] of [['interval_ms', q.interval], ['timeout_ms', q.timeout], ['retries', q.retries]]) {
+            const v = f.get();
+            if (v != null && !Number.isNaN(v)) o[k] = v;
+          }
+          return o;
+        });
+
+        const initial = p.queries && p.queries.length ? p.queries : (p.query ? [{ query: p.query }] : []);
+        initial.forEach((qc) => addQuery(qc));
+        picker.sync();
+
+        srv.row = h('div', { class: 'probe-row' },
+          h('div', { class: 'probe-head' }, h('strong', null, 'DNS server'), h('span', { class: 'grow' }),
+            h('button', { class: 'btn sm', type: 'button', title: 'Give every DNS server the same queries as this one',
+              onclick: () => { const qs = srv.queryConfigs(); servers.forEach((o) => { if (o !== srv) o.setQueries(qs.map((x) => ({ ...x }))); }); } }, 'Copy queries to all servers'),
+            h('button', { class: 'btn sm danger', type: 'button', onclick: () => { servers.splice(servers.indexOf(srv), 1); srv.row.remove(); empty.hidden = servers.length > 0; } }, 'Remove')),
+          h('div', { class: 'grid-fields' }, name.el, server.el, record.el, interval.el, timeout.el, retries.el),
+          h('div', { class: 'query-block' },
+            h('div', { class: 'query-head' }, h('span', { class: 'lbl' }, 'Queries'), picker.el,
+              h('button', { class: 'btn sm', type: 'button', onclick: () => { addQuery({}, true); picker.sync(); } }, '+ Add query')),
+            noQueries, qlist,
+            h('p', { class: 'hint' }, 'Blank record, interval, timeout and retries on a query follow this server\'s values.')));
+        srv.collect = (E) => {
           const o = clone(p);
-          o.name = name.get(); o.server = server.get(); o.query = query.get(); o.record = record.get();
-          if (!o.query) delete o.query; // blank follows the shared query
-          if (!o.name || !o.server) E.add('DNS probe: name and server are required.');
+          delete o.query;
+          o.name = name.get(); o.server = server.get(); o.record = record.get();
+          if (!o.name || !o.server) E.add('DNS server: name and server are required.');
           setOrDelete(o, 'interval_ms', E.num(interval));
           setOrDelete(o, 'timeout_ms', E.num(timeout));
           setOrDelete(o, 'retries', E.num(retries));
+          for (const q of srv.queries) { E.num(q.interval); E.num(q.timeout); E.num(q.retries); }
+          const qs = srv.queryConfigs();
+          if (qs.some((q) => !q.query)) E.add(`DNS server ${o.name || ''}: every query line needs a name (remove empty ones).`);
+          if (qs.length) o.queries = qs; else delete o.queries;
           return o;
         };
-        items.push(item);
-        list.append(item.row);
+        refreshInherit();
+        servers.push(srv);
+        list.append(srv.row);
         empty.hidden = true;
         if (focus) name.input.focus();
       }
-      for (const p of settings.dns_probes.value || []) addProbe(p);
-      empty.hidden = items.length > 0;
-      const useShared = h('button', { class: 'btn sm', type: 'button', title: 'Clear every probe\'s own query so all servers look up the shared one',
-        onclick: () => items.forEach((i) => i.query.set('')) });
+
+      for (const p of settings.dns_probes.value || []) addServer(p);
+      empty.hidden = servers.length > 0;
+      const useShared = h('button', { class: 'btn sm', type: 'button', title: 'Remove every server\'s queries so all of them look up the shared one',
+        onclick: () => servers.forEach((s) => s.setQueries([])) });
       showShared = (q) => {
         shared = q || 'google.com';
-        useShared.textContent = `Use shared query (${shared}) for all`;
-        items.forEach((i) => { i.query.input.placeholder = `Shared: ${shared}`; });
+        useShared.textContent = `Use only the shared query (${shared}) everywhere`;
+        servers.forEach((s) => s.refreshInherit());
       };
       showShared(D.dns_query);
       return {
         body: h('div', null, empty, list,
           h('div', { class: 'row' },
-            h('button', { class: 'btn sm', type: 'button', onclick: () => addProbe({ record: 'A' }, true) }, '+ Add DNS probe'),
+            h('button', { class: 'btn sm', type: 'button', onclick: () => addServer({ record: 'A' }, true) }, '+ Add DNS server'),
             useShared),
-          h('p', { class: 'hint' }, 'A blank query uses the shared query from Probe defaults, so every server answers the same name and their times compare fairly. Blank interval, timeout and retries follow the probe defaults too. Renaming a probe starts a new history.')),
+          h('p', { class: 'hint' }, 'A server without queries looks up the shared query from Probe defaults, so every server answers the same name and their times compare fairly. Blank interval, timeout and retries follow the probe defaults. A server with one query keeps its history; adding a second query starts a separate history for each query. Renaming a server starts new histories.')),
         collect() {
           const E = errorList();
-          return { value: items.map((i) => i.collect(E)), errs: E.errs };
+          return { value: servers.map((s) => s.collect(E)), errs: E.errs };
         },
       };
     },

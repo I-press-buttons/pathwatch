@@ -86,17 +86,21 @@ targets:
     probes:
       - type: icmp-trace
 
-# DNS probes without a query look up defaults.dns_query, so every resolver answers the
-# same name and their times compare fairly.
+# DNS probes: one entry per DNS server, each looking up one or more names (every query is its
+# own probe). A server without queries looks up defaults.dns_query, so every resolver answers
+# the same name and their times compare fairly.
 # dns_probes:
 #   - name: home-resolver
 #     server: 192.168.1.1:53
-#     record: A
+#     record: A                          # record/interval/timeout/retries apply to its queries
+#     queries:
+#       - reddit.com
+#       - apnews.com
+#       - query: facebook.com            # a query can override them
+#         record: AAAA
+#         interval: 10s
 #   - name: cloudflare
 #     server: 1.1.1.1
-#   - name: special-case
-#     server: 192.168.1.1:53
-#     query: apnews.com                  # a probe can still look up its own name
 
 # Alerting. Rules apply to every target that has the probes a rule needs.
 # Targets can disable rules or override parameters:

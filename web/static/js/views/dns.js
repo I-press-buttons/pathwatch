@@ -24,11 +24,12 @@ export function dnsPanel({ title = 'DNS probes', range, emptyHint }) {
         const lastAny = pts[pts.length - 1];
         const failing = lastAny && isNum(lastAny[2]) && lastAny[2] >= 50;
         const totalFail = pts.filter((x) => isNum(x[2]));
+        const q = d.query + (d.record && d.record !== 'A' ? ' ' + d.record : '');
         const avgFail = totalFail.length ? totalFail.reduce((a, x) => a + x[2], 0) / totalFail.length : null;
         grid.append(h('div', { class: 'dns-item' },
           h('div', { class: 'grow' },
             h('div', { class: 't' }, d.name),
-            h('div', { class: 'm', title: `${d.server} · ${d.query}` }, `${d.server} · ${d.query}`),
+            h('div', { class: 'm', title: `${q} · ${d.server}` }, h('span', { class: 'q' }, q), ` · ${d.server}`),
             h('div', { class: 'm' }, isNum(avgFail) ? `${fmtPct(avgFail)} failed` : 'no data yet')),
           h('div', { class: 'spark' }, sparkline(pts)),
           h('div', { class: 'val' }, failing ? h('span', { class: 'pill crit' }, 'failing') : (last ? fmtMs(last[1]) + ' ms' : DASH))));

@@ -68,6 +68,7 @@ this order:
 | `isp_outage` | every target fails while the router still answers: modem, line or ISP |
 | `connection_down` | every target fails and the router's state is unknown |
 | `dns_local_down`, `dns_local_upstream`, `dns_local_rejects` | a local resolver does not answer, answers SERVFAIL (its upstream fails), or answers with another error code |
+| `dns_local_name` | a local resolver answers some of its queries but fails others: the trouble is those names, not the resolver (`warn`) |
 | `local_problem`, `isp_problem`, `dns_problem`, `upstream_problem`, `target_problem` | targets have problems; the verdict follows the most fundamental location among their diagnoses (your network, ISP, DNS, a shared hop beyond the ISP, then single routes or servers) and lists the affected targets |
 | `dns_public_failing`, `dns_slow` | a resolver outside your network fails, or a resolver is slow, while the targets are fine |
 | `nodata` | no target has recent results |
@@ -250,8 +251,11 @@ restores. Value shapes:
 - `alerts.rules[]`: `name`, `type`, `enabled`, `notify`, and the parameters of the type:
   `consecutive`, `metric`, `multiplier`, `min_delta_ms`, `sustain_ms`, `baseline_window_ms`,
   `min_baseline_ms`, `threshold_pct`, `window_ms`, `warn_before_ms`.
-- `dns_probes[]`: `name`, `server`, `query`, `record`, `interval_ms`, `timeout_ms`, `retries`. A
-  blank or missing `query` uses `defaults.dns_query`.
+- `dns_probes[]`: one entry per DNS server: `name`, `server`, `record`, `interval_ms`, `timeout_ms`,
+  `retries`, and `queries[]` (`query`, and optional `record`, `interval_ms`, `timeout_ms`,
+  `retries` that override the server's). Each query runs as its own probe. A server without
+  queries looks up `defaults.dns_query`. The older single `query` field is still accepted (not
+  together with `queries`).
 
 `dns_query_presets` lists the popular names the UI offers as DNS queries.
 - `maintenance_windows[]`: `name`, `days` (`mon`..`sun`), `start` and `end` (`HH:MM`; an end at
@@ -353,9 +357,12 @@ Non-responding TTLs are included with `address: null`, `classification: "no_repl
 
 `GET /api/dns?range=…&buckets=300`
 ```json
-[{"probe_id": 9, "name": "home-resolver", "server": "192.168.1.1:53", "query": "example.com",
+[{"probe_id": 9, "name": "home-resolver", "label": "home-resolver · reddit.com AAAA",
+  "server": "192.168.1.1:53", "query": "reddit.com", "record": "AAAA",
   "points": [[1759496400000, 3.2, 0.0]]}]                 // [ts, rtt_ms avg, fail_pct]
 ```
+One entry per query, grouped by server. `name` is the DNS server's name; `label` adds the query
+when the server has several (it is the name used in alerts).
 
 ## Export (file download)
 

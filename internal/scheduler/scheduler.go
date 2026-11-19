@@ -302,7 +302,8 @@ func (s *Scheduler) syncDNS(list []config.DNSProbe) error {
 		}
 	}
 	s.mu.Unlock()
-	for name, d := range want {
+	for _, d := range list { // in config order, so a server's queries get ids (and display order) in the order listed
+		name := d.Key()
 		s.mu.Lock()
 		_, exists := s.dns[name]
 		s.mu.Unlock()

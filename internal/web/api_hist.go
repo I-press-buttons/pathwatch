@@ -596,8 +596,13 @@ func (s *Server) handleDNS(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			pts := make([][]any, 0, plan.N)
+			var samples, failures int64 // over the whole range
 			for i, c := range pc.Rolls {
 				ts := plan.BucketStart(i).UnixMilli()
+				if c != nil {
+					samples += c.N
+					failures += c.Errors
+				}
 				if c == nil || c.N == 0 {
 					pts = append(pts, []any{ts, nil, nil})
 					continue
@@ -607,7 +612,8 @@ func (s *Server) handleDNS(w http.ResponseWriter, r *http.Request) {
 				pts = append(pts, []any{ts, fp(avg, a), fp(fl, b)})
 			}
 			out = append(out, map[string]any{"probe_id": d.ProbeID, "name": d.Spec.Name, "label": d.Spec.Label(),
-				"server": d.Spec.Server, "query": d.Spec.Query, "record": d.Spec.Record, "points": pts})
+				"server": d.Spec.Server, "query": d.Spec.Query, "record": d.Spec.Record,
+				"samples": samples, "failures": failures, "points": pts})
 		}
 	}
 	writeJSON(w, http.StatusOK, out)

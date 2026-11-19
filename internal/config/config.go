@@ -162,6 +162,9 @@ type Defaults struct {
 	// Retries is how many times a failed HTTP, TCP or DNS probe is retried before the
 	// failure is recorded. ICMP traces never retry: an unanswered probe is the loss being measured.
 	Retries int `yaml:"retries" json:"retries"`
+	// DNSQuery is the name every DNS probe without its own query looks up, so all resolvers
+	// answer the same question and their times compare fairly.
+	DNSQuery string `yaml:"dns_query" json:"dns_query"`
 }
 
 // MaxRetries bounds the retries setting.
@@ -216,7 +219,17 @@ type ProbeConfig struct {
 	Port int `yaml:"port" json:"port,omitempty"`
 }
 
-// DNSProbeConfig queries a resolver directly, independent of any target.
+// DefaultDNSQuery is the built-in defaults.dns_query.
+const DefaultDNSQuery = "google.com"
+
+// DNSQueryPresets are popular, widely cached names offered as DNS probe queries in the UI.
+var DNSQueryPresets = []string{
+	"google.com", "youtube.com", "facebook.com", "reddit.com", "wikipedia.org",
+	"amazon.com", "apnews.com", "cloudflare.com", "microsoft.com", "apple.com",
+}
+
+// DNSProbeConfig queries a resolver directly, independent of any target. A blank query uses
+// defaults.dns_query.
 type DNSProbeConfig struct {
 	Name     string   `yaml:"name" json:"name"`
 	Server   string   `yaml:"server" json:"server"`
@@ -326,6 +339,9 @@ func (c *Config) applyDefaults() {
 	dur(&df.HTTPTimeout, "10s")
 	dur(&df.DNSInterval, "30s")
 	dur(&df.DNSTimeout, "3s")
+	if df.DNSQuery = strings.TrimSpace(df.DNSQuery); df.DNSQuery == "" {
+		df.DNSQuery = DefaultDNSQuery
+	}
 	dur(&df.PathRediscovery, "5m")
 	if df.MaxHops == 0 {
 		df.MaxHops = 30

@@ -147,6 +147,8 @@ func TestStrictAndValidation(t *testing.T) {
 		"bad maint day":     "alerts:\n  maintenance_windows:\n    - name: m\n      days: [xyz]\n      start: \"01:00\"\n      end: \"02:00\"\n",
 		"bad maint tz":      "alerts:\n  maintenance_windows:\n    - name: m\n      days: [mon]\n      start: \"01:00\"\n      end: \"02:00\"\n      timezone: Mars/Base\n",
 		"dns probe no serv": "dns_probes:\n  - name: d\n    query: example.com\n",
+		"dns bad shared q":  "defaults:\n  dns_query: http://x/\n",
+		"dns bad query":     "dns_probes:\n  - name: d\n    server: 1.1.1.1\n    query: a b\n",
 		"dns bad record":    "dns_probes:\n  - name: d\n    server: 1.1.1.1\n    query: example.com\n    record: MX\n",
 		"disable unknown":   "targets:\n  - name: a\n    host: 1.1.1.1\n    alerts:\n      disable: [nonexistent]\n",
 		"webhook no env":    "alerts:\n  notify:\n    webhook:\n      preset: slack\n",
@@ -401,5 +403,51 @@ func TestMetricsOption(t *testing.T) {
 	}
 	if _, err := Parse([]byte(StarterConfig), env); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDNSProbeSharedQuery(t *testing.T) {
+	y := `
+defaults:
+  dns_query: Reddit.com
+dns_probes:
+  - name: home
+    server: 192.168.1.1
+  - name: cloudflare
+    server: 1.1.1.1:53
+  - name: own
+    server: 9.9.9.9
+    query: apnews.com
+`
+	c, err := Parse([]byte(y), env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, p := range c.ResolveDNSProbes() {
+		got[p.Name] = p.Query
+	}
+	want := map[string]string{"home": "reddit.com", "cloudflare": "reddit.com", "own": "apnews.com"}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: query %q, want %q", k, got[k], v)
+		}
+	}
+
+	// without a shared query the built-in default applies
+	c, err = Parse([]byte("dns_probes:\n  - name: d\n    server: 1.1.1.1\n"), env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := c.ResolveDNSProbes()[0].Query; q != DefaultDNSQuery {
+		t.Errorf("default query %q, want %q", q, DefaultDNSQuery)
+	}
+	if len(DNSQueryPresets) != 10 {
+		t.Errorf("%d presets, want 10", len(DNSQueryPresets))
+	}
+	for _, q := range DNSQueryPresets {
+		if !ValidHost(q) {
+			t.Errorf("preset %q is not a valid host", q)
+		}
 	}
 }

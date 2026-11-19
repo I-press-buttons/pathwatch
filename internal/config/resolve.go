@@ -406,7 +406,7 @@ func ResolveDNSProbe(dc DNSProbeConfig, d Defaults) (DNSProbe, error) {
 	p := DNSProbe{
 		Name:     dc.Name,
 		Server:   dc.Server,
-		Query:    dc.Query,
+		Query:    strings.TrimSpace(dc.Query),
 		Record:   strings.ToUpper(dc.Record),
 		Interval: pick(dc.Interval, d.DNSInterval),
 		Timeout:  pick(dc.Timeout, d.DNSTimeout),
@@ -436,9 +436,17 @@ func ResolveDNSProbe(dc DNSProbeConfig, d Defaults) (DNSProbe, error) {
 			return p, fmt.Errorf("dns probe %q: invalid server %q", p.Name, dc.Server)
 		}
 	}
-	if !ValidHost(p.Query) {
-		return p, fmt.Errorf("dns probe %q: invalid query %q", p.Name, dc.Query)
+	if p.Query == "" {
+		p.Query = strings.TrimSpace(d.DNSQuery)
 	}
+	if p.Query == "" {
+		return p, fmt.Errorf("dns probe %q: query is required (set it on the probe or as defaults.dns_query)", p.Name)
+	}
+	q, err := NormalizeHost(p.Query)
+	if err != nil {
+		return p, fmt.Errorf("dns probe %q: invalid query %q", p.Name, p.Query)
+	}
+	p.Query = q
 	if p.Interval < time.Second {
 		return p, fmt.Errorf("dns probe %q: interval too small (minimum 1s)", p.Name)
 	}

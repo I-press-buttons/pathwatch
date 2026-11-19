@@ -65,6 +65,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"enrich": sectionJSON{source(ov.Enrich != nil),
 			config.EnrichSettings{ReverseDNS: eff.ReverseDNSEnabled()}, config.EnrichSettings{ReverseDNS: file.ReverseDNSEnabled()}},
 		"notify_env_prefix": config.NotifyEnvPrefix,
+		"dns_query_presets": config.DNSQueryPresets,
 		"channels": map[string]bool{
 			"webhook": eff.Alerts.Notify.Webhook != nil,
 			"email":   eff.Alerts.Notify.Email != nil,

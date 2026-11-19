@@ -55,6 +55,7 @@ defaults:                                 # inherited by every target/probe
   http_timeout: 10s
   dns_interval: 30s
   dns_timeout: 3s
+  dns_query: google.com                   # looked up by DNS probes without their own query
   path_rediscovery: 5m
   max_hops: 30
   retries: 0                              # retry failed HTTP/TCP/DNS probes (0-10); ICMP never retries
@@ -85,11 +86,17 @@ targets:
     probes:
       - type: icmp-trace
 
+# DNS probes without a query look up defaults.dns_query, so every resolver answers the
+# same name and their times compare fairly.
 # dns_probes:
 #   - name: home-resolver
 #     server: 192.168.1.1:53
-#     query: example.com
 #     record: A
+#   - name: cloudflare
+#     server: 1.1.1.1
+#   - name: special-case
+#     server: 192.168.1.1:53
+#     query: apnews.com                  # a probe can still look up its own name
 
 # Alerting. Rules apply to every target that has the probes a rule needs.
 # Targets can disable rules or override parameters:

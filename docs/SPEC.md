@@ -406,6 +406,7 @@ defaults:                             # inherited by every target/probe; overrid
   tcp_interval: 10s
   http_interval: 30s
   dns_interval: 30s
+  dns_query: google.com               # looked up by every DNS probe without its own query
   path_rediscovery: 5m
   max_hops: 30
   retries: 0                          # retries of a failed HTTP/TCP/DNS probe (0-10); ICMP never retries
@@ -445,11 +446,15 @@ targets:
       override:
         end-loss: { threshold_pct: 10 }
 
-dns_probes:
+dns_probes:                           # a probe without query looks up defaults.dns_query
   - name: home-resolver
     server: 192.168.1.1:53
-    query: example.com
     record: A
+  - name: cloudflare
+    server: 1.1.1.1
+  - name: quad9-apnews
+    server: 9.9.9.9
+    query: apnews.com                 # per-probe query
 
 alerts:
   rules:

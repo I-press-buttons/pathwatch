@@ -316,6 +316,8 @@ Rules are defined globally and apply to every target that has the probes a rule 
 | `dns_failure` / `dns_latency` | DNS probe errors / SERVFAIL for N consecutive probes, or latency anomaly |
 | `cert_expiry` | Certificate expires within `warn_before` (default 14d); fires once per certificate |
 | `route_change` | Optional, off by default: notify when a new path version starts. A one-shot alert: it is recorded as resolved immediately and sends a single notification (state `event`) |
+| `public_ip_change` | The public IPv4 or IPv6 address changed (needs [public IP monitoring](#public-ip)). One-shot like `route_change`, one alert per change; the first address ever seen is not a change. Not held back by a local outage, since a change usually follows a reconnect. The message names the old and new network when the ASN changed (a failover to a backup line) |
+| `monitor_health` | pathwatch itself has a problem (see [Monitor health](#monitor-health)) for `sustain` (default 5m); clears after `sustain` without one. Not held back by a local outage |
 | `local_connectivity` | Built in; see [Local outage detection](#local-outage-detection) |
 
 ### Baselines and anomaly detection
@@ -336,6 +338,44 @@ Rolling median plus MAD per metric, computed from 1-minute rollups over `baselin
 - A "resolved" notification includes the duration. Cooldown never suppresses resolved notifications.
 - Alert state persists in SQLite, so a restart neither re-fires nor loses active alerts (cooldowns, and the "once per certificate" and "once per route change" memory, are restored too).
 - Probe-based rules (consecutive failures, `cert_expiry`) are evaluated when the minute a probe result belongs to is analysed, so the local-outage verdict for that time is known first. Alerts for them therefore appear up to about two minutes after the condition begins.
+
+### Public IP
+
+Opt-in (`public_ip.enabled`, off by default because it contacts a service that is not a target). Every `interval` (default 5m, minimum 30s) pathwatch asks for the public address of each family: by default an A query for `myip.opendns.com` sent to the OpenDNS resolvers over IPv4 and an AAAA query over IPv6 (UDP, stdlib codec, no new dependency), or, with `source: https://…`, an HTTP GET forced over `tcp4` and then `tcp6` whose plain-text body is the address. Proxy environment variables are ignored. `skip_ipv6` checks IPv4 only.
+
+- Each address is an open `public_ip` event (`target_id` NULL, details `{family, addr, previous, asn, as_name, prev_asn, prev_as_name}`); open events are never removed by retention, so the current address survives restarts.
+- A different address is recorded only when the next check, 30 seconds later, agrees (a CGNAT pool answering from several addresses, or one odd reply, is not a change). The change closes the old event and opens the new one; `public_ip_change` alerts on it.
+- A network that redirects all DNS to its own resolver gets an empty answer for `myip.opendns.com`; the error says so and suggests an http(s) source.
+- UI: a Public IP card leads the Overview status strip (address, network from the hop enricher, IPv6 address, "Changed 12m ago · was …" for a day after a change, "Turn on" while off), with a history dialog (current addresses, changes of the last 90 days, Check now).
+
+### DNS answer checks
+
+A DNS server or one of its queries can check the answer, not only that one came back. Checks set on a query replace the server's.
+
+- `expect: [192.168.1.10, 10.0.0.0/8]`: every address in the answer must be inside one of these, and there must be at least one.
+- `expect_nxdomain: true`: for a made-up name; NXDOMAIN is success and an address in the answer means unknown names are rewritten (ISP NXDOMAIN hijacking, a captive resolver). Not combined with `expect`.
+- `compare_with: 1.1.1.1`: the same question goes to a second resolver; the probe fails when both return addresses and they share none. A failing or empty reference never fails the probe. Best for names with stable answers: CDN names often differ by resolver.
+
+A failed check is a failed DNS probe whose error starts with `wrong answer:`, so `dns_failure` alerts on it after `consecutive` failures, and the network verdict says "Your DNS resolver … gives wrong answers" instead of "is not answering".
+
+### Monitor health
+
+pathwatch watches itself every 30 seconds and lists problems on the Overview (Monitor health card and dialog), in `/api/system`, in `/metrics` and through the `monitor_health` rule:
+
+| Problem | When |
+|---|---|
+| Low disk space (warning; critical below 1% or 50 MB) | Free space of the data folder's file system below `system.disk_free_min_pct` (default 5) or `system.disk_free_min_bytes` (default 500 MB) |
+| Database writer stalled (critical) | No commit for 30 seconds |
+| Database writes failed (critical) | A writer transaction or statement failed in the last 10 minutes |
+| Measurements dropped (warning) | The write queue overflowed in the last 10 minutes |
+| Probing stalled (critical) | The `/healthz` scheduler check fails |
+| Rounds late (warning) | At least 3 and over 10% of the ICMP rounds of the last 10 minutes started more than 1.5 intervals after the previous one or were dropped as stalled |
+| ICMP send errors (warning) | At least 3 rounds in the last 10 minutes could not send |
+| Clock offset (warning) | With `system.ntp_server` set (off by default), the SNTP offset is above `system.clock_max_offset` (default 2s); checked every 15 minutes. An unreachable NTP server is shown but is not a problem |
+
+### Digest
+
+`digest.schedule: daily | weekly` (default `off`) sends a summary at `digest.time` (HH:MM, default 08:00) in `digest.timezone` (default the server's), on `digest.weekday` for a weekly one, over the configured channels (`digest.notify` limits them). It covers the last day or week: availability, average and p95 per target (the same end-to-end source as the ISP report) plus HTTP success, sent alerts per target with the longest, alerts without a target (local connection, DNS probes, monitor health), public IP changes and current monitor health problems. It is queued in the outbox like an alert (rule type `digest`, state `event`; the title is "pathwatch daily summary"), so it is retried and delivered after an outage. The last sent slot is stored in the `settings` table, so a restart neither repeats nor skips one; a slot missed by more than an hour (pathwatch was down) is skipped, as is the first slot after the digest is turned on. Settings → Digest has Preview and Send now (at most every 30 s).
 
 ### Silences and maintenance windows
 
@@ -446,6 +486,25 @@ targets:
       override:
         end-loss: { threshold_pct: 10 }
 
+public_ip:                            # off by default: contacts OpenDNS (or the source URL)
+  enabled: true
+  interval: 5m
+  source: opendns                     # or an http(s) URL answering with the address as text
+  skip_ipv6: false
+
+system:                               # monitor health thresholds
+  disk_free_min_pct: 5
+  disk_free_min_bytes: 500000000
+  ntp_server: ""                      # e.g. pool.ntp.org to check the clock offset
+  clock_max_offset: 2s
+
+digest:
+  schedule: weekly                    # off | daily | weekly
+  time: "08:00"
+  weekday: mon
+  timezone: Europe/London
+  # notify: [email]                   # default: every configured channel
+
 dns_probes:                           # one entry per DNS server; each query is its own probe
   - name: home-resolver
     server: 192.168.1.1:53
@@ -457,8 +516,13 @@ dns_probes:                           # one entry per DNS server; each query is 
       - query: facebook.com           # a query can override any of them
         record: AAAA
         interval: 10s
+      - query: nas.home.example       # answer checks (see DNS answer checks)
+        expect: [192.168.1.10]
+      - query: no-such-name.example
+        expect_nxdomain: true
   - name: cloudflare                  # no queries: looks up defaults.dns_query
     server: 1.1.1.1
+    # compare_with: 9.9.9.9           # fail when the two resolvers share no address
 
 alerts:
   rules:
@@ -493,6 +557,11 @@ alerts:
       type: route_change
       enabled: false
       notify: [webhook]               # per-rule channel routing
+    - name: wan-ip
+      type: public_ip_change          # needs public_ip.enabled
+    - name: self
+      type: monitor_health
+      sustain: 5m
   cooldown: 30m
   clear_ratio: 0.7                    # hysteresis
   maintenance_windows:
@@ -557,7 +626,7 @@ Config rules:
 - **Linux:** sample systemd unit with `AmbientCapabilities=CAP_NET_RAW`, `DynamicUser=yes`, and a `StateDirectory`.
 - **Windows:** native service via `pathwatch service install` (`golang.org/x/sys/windows/svc`), logging to a file.
 - **License:** MIT.
-- **Privacy:** no telemetry and no calls to third-party APIs by default. Reverse DNS for hop addresses goes to the system resolver (can be disabled). ASN enrichment uses a user-supplied local GeoLite2 ASN database, or DNS-based lookup (Team Cymru), which is **off by default**. Private and CGNAT addresses are never looked up. The heartbeat is off unless configured.
+- **Privacy:** no telemetry and no calls to third-party APIs by default. Reverse DNS for hop addresses goes to the system resolver (can be disabled). ASN enrichment uses a user-supplied local GeoLite2 ASN database, or DNS-based lookup (Team Cymru), which is **off by default**. Private and CGNAT addresses are never looked up. The heartbeat, public IP monitoring (OpenDNS or a chosen URL), the NTP clock check and the digest are off unless configured.
 - **Security defaults:** bind to loopback, require auth if bound elsewhere, never log secrets, secrets only from environment variables.
 
 ## v1 deployment and UX additions (Synology + Portainer)
@@ -581,7 +650,7 @@ Everything about what is monitored and when it alerts has a UI control:
 - **Targets** (Overview → Add target / Edit, or the target page): name, host, hop trace on/off with interval, timeout, max hops and rediscovery interval, any number of HTTP probes (URL, method, expected status, interval, timeout, retries, redirects, TLS verification) and TCP probes (port, interval, timeout, retries), and per-target alert settings (turn rules off, override their thresholds).
 - **Settings page:** probe defaults (every interval and timeout, max hops, rediscovery, retries), status thresholds (when a target turns "degraded"), alert rules (add, remove, enable, thresholds, channel routing, cooldown, clear ratio), and DNS probes. Notification channels are shown read-only there, with a test button each (see Test notifications).
 
-Storage and precedence: UI edits are stored in the database (`settings` table and `targets.spec`) and layered over the config file. An edited section (defaults, status, alert rules, DNS probes, maintenance windows, notification channels, heartbeat, retention, hop enrichment) replaces the file's section; an edited config-file target is replaced by its edited definition (matched by name). Each can be reverted to the file in the UI. Changes apply immediately without a restart, and SIGHUP reloads keep the UI edits. If stored settings no longer fit a changed config file (for example a rule they refer to was removed), pathwatch logs it and falls back to the file's sections rather than failing to start.
+Storage and precedence: UI edits are stored in the database (`settings` table and `targets.spec`) and layered over the config file. An edited section (defaults, status, alert rules, DNS probes, maintenance windows, notification channels, heartbeat, digest, public IP, monitor health, retention, hop enrichment) replaces the file's section; an edited config-file target is replaced by its edited definition (matched by name). Each can be reverted to the file in the UI. Changes apply immediately without a restart, and SIGHUP reloads keep the UI edits. If stored settings no longer fit a changed config file (for example a rule they refer to was removed), pathwatch logs it and falls back to the file's sections rather than failing to start.
 
 **Limits.** At most 200 targets (config-file and UI-created together), 16 probes per target and 50 DNS probes. They apply to the config file (more is a validation error) and to the API (400 with the message), so a client with write access cannot make the instance run an unbounded number of probes. The 200-target total is checked when a target is created; a database that already holds more (from an older version) still starts, keeps its targets and only refuses new ones. A stored UI target over the probe cap is logged and not run until it is edited down; stored DNS probe lists over the cap fall back to the file's, as for any other stored setting that no longer fits.
 

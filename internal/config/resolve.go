@@ -101,6 +101,76 @@ type DNSProbe struct {
 	// Multi is set when the server has more than one query. A server with a single query
 	// keeps the key it always had ("dns|<name>"), so its history survives the upgrade.
 	Multi bool
+
+	// Answer checks (DNSAnswerChecks), resolved: the query's own, else the server's.
+	Expect         []netip.Prefix // every answered address must be inside one of these
+	ExpectNXDomain bool
+	CompareWith    string // host:port of a reference resolver, "" = none
+}
+
+// HasAnswerChecks reports whether the probe verifies its answer.
+func (d DNSProbe) HasAnswerChecks() bool {
+	return len(d.Expect) > 0 || d.ExpectNXDomain || d.CompareWith != ""
+}
+
+// NormalizeDNSServer turns "1.1.1.1", "[2606:4700::1111]", "dns.example" or "host:port" into
+// host:port (port 53 when none is given).
+func NormalizeDNSServer(in string) (string, error) {
+	server := strings.TrimSpace(in)
+	if server == "" {
+		return "", fmt.Errorf("server is required (host:port)")
+	}
+	if _, _, err := net.SplitHostPort(server); err == nil {
+		return server, nil
+	}
+	if ap, perr := netip.ParseAddr(strings.Trim(server, "[]")); perr == nil {
+		return net.JoinHostPort(ap.String(), "53"), nil
+	}
+	if !strings.Contains(server, ":") && ValidHost(server) {
+		return net.JoinHostPort(server, "53"), nil
+	}
+	return "", fmt.Errorf("invalid server %q", in)
+}
+
+// ParseExpect parses expect entries (addresses or CIDR prefixes) into prefixes.
+func ParseExpect(list []string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, e := range list {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		if strings.Contains(e, "/") {
+			p, err := netip.ParsePrefix(e)
+			if err != nil {
+				return nil, fmt.Errorf("expect: %q is not an address or CIDR prefix", e)
+			}
+			out = append(out, p.Masked())
+			continue
+		}
+		a, err := netip.ParseAddr(strings.Trim(e, "[]"))
+		if err != nil {
+			return nil, fmt.Errorf("expect: %q is not an address or CIDR prefix", e)
+		}
+		a = a.Unmap()
+		out = append(out, netip.PrefixFrom(a, a.BitLen()))
+	}
+	return out, nil
+}
+
+// resolveChecks merges a query's answer checks over its server's.
+func resolveChecks(q, srv DNSAnswerChecks) (DNSAnswerChecks, error) {
+	c := srv
+	if len(q.Expect) > 0 || q.ExpectNXDomain {
+		c.Expect, c.ExpectNXDomain = q.Expect, q.ExpectNXDomain
+	}
+	if strings.TrimSpace(q.CompareWith) != "" {
+		c.CompareWith = q.CompareWith
+	}
+	if c.ExpectNXDomain && len(c.Expect) > 0 {
+		return c, fmt.Errorf("set either expect or expect_nxdomain, not both")
+	}
+	return c, nil
 }
 
 // Key is the stable identity of the DNS probe.
@@ -430,18 +500,9 @@ func ResolveDNSProbe(dc DNSProbeConfig, d Defaults) ([]DNSProbe, error) {
 	fail := func(f string, a ...any) ([]DNSProbe, error) {
 		return nil, fmt.Errorf("dns probe %q: %s", name, fmt.Sprintf(f, a...))
 	}
-	server := strings.TrimSpace(dc.Server)
-	if server == "" {
-		return fail("server is required (host:port)")
-	}
-	if _, _, err := net.SplitHostPort(server); err != nil {
-		if ap, perr := netip.ParseAddr(strings.Trim(server, "[]")); perr == nil {
-			server = net.JoinHostPort(ap.String(), "53")
-		} else if !strings.Contains(server, ":") && ValidHost(server) {
-			server = net.JoinHostPort(server, "53")
-		} else {
-			return fail("invalid server %q", dc.Server)
-		}
+	server, err := NormalizeDNSServer(dc.Server)
+	if err != nil {
+		return fail("%v", err)
 	}
 	queries := dc.Queries
 	if strings.TrimSpace(dc.Query) != "" {
@@ -471,6 +532,22 @@ func ResolveDNSProbe(dc DNSProbeConfig, d Defaults) ([]DNSProbe, error) {
 		}
 		if p.Record == "" {
 			p.Record = strings.ToUpper(strings.TrimSpace(dc.Record))
+		}
+		checks, err := resolveChecks(qc.DNSAnswerChecks, dc.DNSAnswerChecks)
+		if err != nil {
+			return fail("%v (query %s)", err, strings.TrimSpace(qc.Query))
+		}
+		if p.Expect, err = ParseExpect(checks.Expect); err != nil {
+			return fail("%v", err)
+		}
+		p.ExpectNXDomain = checks.ExpectNXDomain
+		if strings.TrimSpace(checks.CompareWith) != "" {
+			if p.CompareWith, err = NormalizeDNSServer(checks.CompareWith); err != nil {
+				return fail("compare_with: %v", err)
+			}
+			if p.CompareWith == server {
+				return fail("compare_with must be a different server than %s", server)
+			}
 		}
 		if p.Record == "" {
 			p.Record = "A"

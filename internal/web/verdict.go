@@ -14,6 +14,7 @@ import (
 	"github.com/i-press-buttons/pathwatch/internal/alert"
 	"github.com/i-press-buttons/pathwatch/internal/analyze"
 	"github.com/i-press-buttons/pathwatch/internal/config"
+	"github.com/i-press-buttons/pathwatch/internal/probe"
 	"github.com/i-press-buttons/pathwatch/internal/store"
 )
 
@@ -113,13 +114,15 @@ func (d dnsHealth) state() string {
 }
 
 // dnsErrKind sorts the last error of a DNS probe: the resolver does not answer at all
-// ("silent"), answers SERVFAIL because its own upstream lookups fail ("upstream"), or answers
-// with another error code ("rcode").
+// ("silent"), answers SERVFAIL because its own upstream lookups fail ("upstream"), answers
+// with another error code ("rcode"), or answers something an answer check rejects ("answer").
 func dnsErrKind(e string) string {
 	l := strings.ToLower(e)
 	switch {
 	case e == "":
 		return ""
+	case strings.HasPrefix(l, probe.WrongAnswerPrefix):
+		return "answer"
 	case strings.Contains(l, "servfail"):
 		return "upstream"
 	case strings.HasPrefix(l, "rcode"):
@@ -469,6 +472,10 @@ func localDNSVerdict(out networkJSON, failing, okDNS, publicDNS []dnsHealth, aff
 		out.Code = "dns_local_upstream"
 		out.Headline = "Your DNS resolver " + d.label() + " answers, but its upstream lookups fail"
 		out.Detail = "It replies SERVFAIL: the resolver runs but cannot get answers from its upstream servers. Check its upstream DNS settings (DoH/DoT servers, or the ISP resolver it forwards to)."
+	case "answer":
+		out.Code = "dns_local_wrong_answer"
+		out.Headline = "Your DNS resolver " + d.label() + " gives wrong answers"
+		out.Detail = "It answers, but not what this probe expects (" + strings.TrimPrefix(d.LastErr, probe.WrongAnswerPrefix) + "). A stale cache, a broken blocklist or a resolver that rewrites names can cause this."
 	case "rcode":
 		out.Code = "dns_local_rejects"
 		out.Headline = "Your DNS resolver " + d.label() + " rejects lookups"
@@ -482,7 +489,7 @@ func localDNSVerdict(out networkJSON, failing, okDNS, publicDNS []dnsHealth, aff
 		}
 		out.Detail += ", so devices that use it cannot open sites by name. Check the resolver itself: its container or host is down, stuck or restarting."
 	}
-	if d.LastErr != "" && dnsErrKind(d.LastErr) != "rcode" {
+	if k := dnsErrKind(d.LastErr); d.LastErr != "" && k != "rcode" && k != "answer" {
 		out.Detail += ` Last error: "` + d.LastErr + `".`
 	}
 	var otherDown []dnsHealth // other resolvers that are down (not more queries of this one)

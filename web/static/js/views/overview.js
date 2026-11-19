@@ -5,6 +5,8 @@ import { getStatus, onStatus } from '../store.js';
 import { statusPill, sparkline, panel, confirmDialog, metricClass, WHERE } from '../ui.js';
 import { dnsPanel } from './dns.js';
 import { openTargetEditor } from './target-editor.js';
+import { publicIPCard } from './publicip.js';
+import { systemCard } from './system.js';
 
 const RANGES = ['1h', '6h', '24h'];
 const RANGE_MS = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 86400e3 };
@@ -16,7 +18,7 @@ const SOON_MS = 300;        // SSE-triggered loads within this window collapse i
 export function mount(root, ctx) {
   let range = lsGet('pathwatch.overviewRange', '1h');
   if (!RANGES.includes(range)) range = '1h';
-  let targets = null, net = null, netKey = '', spark = new Map(), loadedOnce = false, destroyed = false, timer = null, seq = 0;
+  let targets = null, net = null, pub = null, netKey = '', spark = new Map(), loadedOnce = false, destroyed = false, timer = null, seq = 0;
   let busy = false, again = false, ctl = null, soon = null, sparkAt = 0, sparkRange = null;
 
   const rangeSel = h('select', { 'aria-label': 'Sparkline range', onchange: () => { range = rangeSel.value; lsSet('pathwatch.overviewRange', range); load({ fresh: true }); } },
@@ -38,9 +40,11 @@ export function mount(root, ctx) {
     for (const t of list) { if (t.active === false) continue; if (t.status === 'ok') counts.ok++; else if (t.status === 'alerting' || t.status === 'degraded') counts.bad++; else counts.other++; }
     const local = s ? s.local_status : null;
     stripEl.append(
+      publicIPCard(pub, () => load()),
       stat('Local connectivity', local === 'ok' ? 'OK' : local === 'down' ? 'DOWN' : local ? 'Unknown' : DASH, local === 'ok' ? 'ok' : local === 'down' ? 'crit' : '', 'Gateway and first hops'),
       stat('Active alerts', s ? String(s.active_alerts) : DASH, s && s.active_alerts > 0 ? 'crit' : 'ok', h('a', { href: '#/alerts' }, 'View alerts')),
       stat('Targets', String(list.length), '', targets ? `${counts.ok} ok · ${counts.bad} need attention${counts.other ? ' · ' + counts.other + ' other' : ''}` : ''),
+      s && s.system ? systemCard(s.system) : null,
       s ? stat('ICMP mode', s.icmp_mode, s.icmp_mode === 'unavailable' ? 'crit' : '', s.icmp_mode === 'unavailable' ? 'Hop traces are disabled; HTTP/TCP probes still work' : 'v' + s.version) : null);
   }
   function stat(k, v, cls, sub) {
@@ -137,12 +141,14 @@ export function mount(root, ctx) {
     const wantSpark = sparkRange !== rng || started - sparkAt >= sparkEvery() - 500; // 500 ms: interval ticks are not exact
     if (!loadedOnce) { msgEl.hidden = false; msgEl.className = 'state-msg'; clear(msgEl).append(h('span', { class: 'spinner' }), 'Loading targets…'); }
     try {
-      const [t, o, n] = await Promise.all([api.targets({ signal }),
+      const [t, o, n, p] = await Promise.all([api.targets({ signal }),
         wantSpark ? api.overview({ range: rng }, { signal }).catch((e) => { if (e && e.name === 'AbortError') throw e; return null; }) : null,
-        api.network({ signal, quiet: true }).catch((e) => { if (e && e.name === 'AbortError') throw e; return null; })]);
+        api.network({ signal, quiet: true }).catch((e) => { if (e && e.name === 'AbortError') throw e; return null; }),
+        api.publicIP({ signal, quiet: true }).catch((e) => { if (e && e.name === 'AbortError') throw e; return pub; })]);
       if (my !== seq || destroyed) return;
       targets = t || [];
       net = n;
+      pub = p;
       if (o) { spark = new Map(o.map((x) => [x.target_id, x])); sparkAt = started; sparkRange = rng; }
       else if (wantSpark && sparkRange !== rng) spark = new Map(); // failed for a new range: don't show the old range's lines (retried next load)
       loadedOnce = true;

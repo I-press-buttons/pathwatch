@@ -16,6 +16,10 @@ Give home labs, small networks and anyone troubleshooting flaky connectivity a f
 - **Rate-limit-aware alerting**: end-to-end probes decide; loss on an intermediate router alone never pages you. Hysteresis, cooldowns, silences, maintenance windows, and queued retries. Webhook (Discord, Slack, ntfy, generic) and email channels, with a "Send test" button per channel (Settings) and `pathwatch notify-test`.
 - **From alert to evidence in one click**: every alert opens the target page at the time it happened, alert markers on the timeline zoom to the incident, and a target or a single rule can be silenced from the target page.
 - **MOS score** per target from latency, jitter and loss.
+- **Public IP on the dashboard**: the Overview shows your public IPv4 and IPv6 address with its network (ASN), when it last changed and a history of changes, so ISP renumbering, a dropped PPPoE session or a silent failover to a backup line is visible at a glance. A `public_ip_change` rule notifies on each change. Opt-in (Settings → Public IP, or "Turn on" on the card) because it asks OpenDNS, or a URL you choose, for your address.
+- **DNS answer checks**: a DNS probe can verify the answer, not just that one came back: expected addresses or CIDRs (`expect`), a made-up name that must stay NXDOMAIN to catch ISP rewriting (`expect_nxdomain`), or agreement with a second resolver (`compare_with`) to catch stale caches and broken blocklists.
+- **Monitor health**: pathwatch watches itself (free disk space for the database, database size and failed or dropped writes, probe rounds that run late or cannot send, and optionally the clock offset against an NTP server) on an Overview card, in `/api/system` and `/metrics`, and through a `monitor_health` alert rule.
+- **Daily or weekly digest**: a summary over your notification channels with availability, latency and alerts per target, public IP changes and monitor health, to catch slow drift that never crosses an alert threshold. Preview and Send now in Settings → Digest.
 - **Data export and ISP report**: download the selected range as CSV or JSON (per-hop or per-probe rollups), or open a printable report with availability, latency, MOS, incidents, the first degraded hop of each incident, probe impact, monitoring gaps and path changes.
 - **Long-term history** in SQLite with automatic rollups and retention.
 - **Configurable from the UI or YAML**: manage targets (hostname, IPv4, IPv6; hop tracing works over both families), intervals, thresholds and alert rules in the browser, or keep everything in a version-controlled file.
@@ -87,7 +91,7 @@ scrape_configs:
       - targets: ["nas.local:8095"]
 ```
 
-Metrics (all prefixed `pathwatch_`, times in seconds, ratios 0..1; series without data are omitted): `target_up`, `target_paused`, `target_loss_ratio`, `target_rtt_{avg,min,max,p95}_seconds`, `target_jitter_seconds`, `target_mos`, `target_hops` (labels `target`, `host`); `hop_loss_ratio`, `hop_rtt_avg_seconds` (labels `target`, `ttl`); `probe_total_seconds`, `probe_{dns,connect,tls,ttfb,transfer}_seconds`, `probe_error_ratio`, `probe_http_status`, `probe_cert_expiry_timestamp_seconds` (labels `target`, `probe`, `type`); `alerts_active`, `outbox_pending`, `build_info{version}`.
+Metrics (all prefixed `pathwatch_`, times in seconds, ratios 0..1; series without data are omitted): `target_up`, `target_paused`, `target_loss_ratio`, `target_rtt_{avg,min,max,p95}_seconds`, `target_jitter_seconds`, `target_mos`, `target_hops` (labels `target`, `host`); `hop_loss_ratio`, `hop_rtt_avg_seconds` (labels `target`, `ttl`); `probe_total_seconds`, `probe_{dns,connect,tls,ttfb,transfer}_seconds`, `probe_error_ratio`, `probe_http_status`, `probe_cert_expiry_timestamp_seconds` (labels `target`, `probe`, `type`); `alerts_active`, `outbox_pending`, `build_info{version}`; monitor health: `monitor_health` (0 ok, 1 warning, 2 critical), `monitor_issues`, `disk_free_bytes`, `disk_free_ratio`, `db_size_bytes`, `db_writes_dropped_total`, `db_write_errors_total`, `db_last_commit_seconds`, `icmp_rounds_total`, `icmp_rounds_late_total`, `icmp_rounds_discarded_total`, `icmp_send_errors_total`, `clock_offset_seconds`, `goroutines`, `heap_bytes`; and, while public IP monitoring is on, `public_ip_info{family,address}` and `public_ip_since_timestamp_seconds{family}`.
 
 ## Security
 
@@ -106,7 +110,7 @@ Metrics (all prefixed `pathwatch_`, times in seconds, ratios 0..1; series withou
 - [docs/SPEC.md](docs/SPEC.md): design and full configuration reference
 - [docs/API.md](docs/API.md): JSON API used by the UI
 
-pathwatch has no telemetry and only contacts the targets and notification endpoints you configure.
+pathwatch has no telemetry and only contacts the targets and notification endpoints you configure, plus, only when you turn them on, the public IP source (OpenDNS by default) and the NTP server for the clock check.
 
 ## License
 

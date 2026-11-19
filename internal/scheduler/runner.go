@@ -355,6 +355,7 @@ type icmpState struct {
 	rounds   int // rounds since start
 	unrespEv int64
 	lastWarn time.Time
+	prev     time.Time // start of the previous round
 }
 
 func (r *runner) icmpLoop(ctx context.Context) {
@@ -443,6 +444,14 @@ func (r *runner) round(ctx context.Context, st *icmpState) {
 	}
 	limit := st.limiter.Next()
 	start := time.Now()
+	// a round that starts well after its interval (but not so late that it is a gap) means this
+	// machine cannot keep up: monitor health counts it
+	if !st.prev.IsZero() {
+		if d := start.Sub(st.prev); d > ic.Interval*3/2 && d < 3*ic.Interval {
+			r.s.stats.late.Add(1)
+		}
+	}
+	st.prev = start
 	if g := st.gaps.Observe(start); g != nil {
 		r.s.opts.Store.RecordGap(r.row.ID, g.From.UTC(), g.To.UTC(), g.Reason)
 		r.s.log.Warn("monitor gap detected", r.log("reason", g.Reason, "from", g.From.UTC(), "to", g.To.UTC())...)
@@ -457,7 +466,12 @@ func (r *runner) round(ctx context.Context, st *icmpState) {
 	// results are artefacts, so it is dropped (the surrounding time becomes a gap).
 	if el := time.Since(start); el > ic.Timeout+time.Duration(limit)*r.s.opts.Stagger+time.Second {
 		r.s.log.Warn("discarding ICMP round that took too long (system suspended or stalled?)", r.log("took", el)...)
+		r.s.stats.discarded.Add(1)
 		return
+	}
+	r.s.stats.rounds.Add(1)
+	if rr.SendErr != nil {
+		r.s.stats.sendErrs.Add(1)
 	}
 	if rr.SendErr != nil && time.Since(st.lastWarn) > time.Minute {
 		st.lastWarn = time.Now()

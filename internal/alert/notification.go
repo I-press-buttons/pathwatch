@@ -47,8 +47,16 @@ type Notification struct {
 	Details   json.RawMessage `json:"details,omitempty"`
 }
 
-// Title is a short one-line summary, for example "FIRING cloudflare: http-slow".
+// RuleTypeDigest is the rule type of a digest (a periodic summary, not an alert). Its Rule is
+// the digest's name ("daily summary") and Message the summary text.
+const RuleTypeDigest = "digest"
+
+// Title is a short one-line summary, for example "FIRING cloudflare: http-slow", or
+// "pathwatch weekly summary" for a digest.
 func (n Notification) Title() string {
+	if n.RuleType == RuleTypeDigest {
+		return "pathwatch " + n.Rule
+	}
 	return strings.ToUpper(n.State) + " " + n.Target + ": " + n.Rule
 }
 

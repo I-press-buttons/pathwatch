@@ -53,11 +53,23 @@ func (e *EmailSender) port() int {
 }
 
 // Subject returns the message subject, for example "[pathwatch] FIRING cloudflare: http-slow".
-func Subject(n Notification) string { return "[pathwatch] " + n.Title() }
+func Subject(n Notification) string {
+	if n.RuleType == RuleTypeDigest {
+		return "[pathwatch] " + n.Rule
+	}
+	return "[pathwatch] " + n.Title()
+}
 
 // Body returns the plain-text message body.
 func Body(n Notification) string {
 	var b strings.Builder
+	if n.RuleType == RuleTypeDigest {
+		b.WriteString(n.Title() + "\n\n" + n.Message + "\n")
+		if n.Link != "" {
+			b.WriteString("\n" + n.Link + "\n")
+		}
+		return b.String()
+	}
 	switch n.State {
 	case StateResolved:
 		b.WriteString("pathwatch: alert resolved\n\n")

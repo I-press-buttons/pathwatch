@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -99,6 +100,63 @@ func (c *Config) Validate() error {
 
 	if len(c.Targets) > MaxTargets {
 		add("too many targets (%d, max %d)", len(c.Targets), MaxTargets)
+	}
+	{
+		p := c.PublicIP
+		if p.Interval.D() < 30*time.Second {
+			add("public_ip.interval must be at least 30s")
+		}
+		if p.Source != PublicIPSourceOpenDNS {
+			u, err := url.Parse(p.Source)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				add("public_ip.source must be opendns or an http(s) URL")
+			}
+		}
+	}
+	{
+		sy := c.System
+		if sy.DiskFreeMinPct < 0 || sy.DiskFreeMinPct >= 100 {
+			add("system.disk_free_min_pct must be in [0, 100)")
+		}
+		if sy.DiskFreeMinBytes < 0 {
+			add("system.disk_free_min_bytes must not be negative")
+		}
+		if sy.ClockMaxOffset.D() < 100*time.Millisecond {
+			add("system.clock_max_offset must be at least 100ms")
+		}
+		if sy.NTPServer != "" {
+			host := sy.NTPServer
+			if h, _, err := net.SplitHostPort(host); err == nil {
+				host = h
+			}
+			if _, err := netip.ParseAddr(strings.Trim(host, "[]")); err != nil && !ValidHost(host) {
+				add("system.ntp_server %q is not a host name or address", sy.NTPServer)
+			}
+		}
+	}
+	{
+		d := c.Digest
+		switch d.Schedule {
+		case DigestOff, DigestDaily, DigestWeekly:
+		default:
+			add("digest.schedule %q must be off, daily or weekly", d.Schedule)
+		}
+		if _, ok := ParseClock(d.Time); !ok {
+			add("digest.time %q must be HH:MM", d.Time)
+		}
+		if _, ok := ParseWeekday(d.Weekday); !ok {
+			add("digest.weekday %q must be mon..sun", d.Weekday)
+		}
+		if d.Timezone != "" {
+			if _, err := time.LoadLocation(d.Timezone); err != nil {
+				add("digest.timezone: unknown timezone %q", d.Timezone)
+			}
+		}
+		for _, n := range d.Notify {
+			if n != "webhook" && n != "email" {
+				add("digest.notify channel %q must be webhook or email", n)
+			}
+		}
 	}
 	if len(c.DNSProbes) > MaxDNSProbes {
 		add("too many DNS probes (%d, max %d)", len(c.DNSProbes), MaxDNSProbes)
@@ -236,7 +294,7 @@ func (c *Config) validateAlerts() []error {
 			if r.Window.D() <= 0 {
 				add("alerts.rules[%d] (%s): window must be positive", i, r.Name)
 			}
-		case "path_degradation":
+		case "path_degradation", "monitor_health":
 			if r.Sustain.D() <= 0 {
 				add("alerts.rules[%d] (%s): sustain must be positive", i, r.Name)
 			}

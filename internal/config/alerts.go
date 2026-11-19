@@ -206,6 +206,7 @@ func (e *EmailConfig) clone() *EmailConfig {
 var RuleTypes = []string{
 	"http_failure", "http_latency", "final_hop_loss", "path_degradation",
 	"tcp_failure", "dns_failure", "dns_latency", "cert_expiry", "route_change",
+	"public_ip_change", "monitor_health",
 }
 
 func (a *AlertsConfig) applyDefaults() {
@@ -263,7 +264,7 @@ func (a *AlertsConfig) applyDefaults() {
 			if r.Window == 0 {
 				r.Window = Duration(5 * time.Minute)
 			}
-		case "path_degradation":
+		case "path_degradation", "monitor_health":
 			if r.Sustain == 0 {
 				r.Sustain = Duration(5 * time.Minute)
 			}

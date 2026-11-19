@@ -20,7 +20,9 @@ import (
 	"github.com/i-press-buttons/pathwatch/internal/config"
 	"github.com/i-press-buttons/pathwatch/internal/enrich"
 	"github.com/i-press-buttons/pathwatch/internal/probe"
+	"github.com/i-press-buttons/pathwatch/internal/publicip"
 	"github.com/i-press-buttons/pathwatch/internal/scheduler"
+	"github.com/i-press-buttons/pathwatch/internal/selfmon"
 	"github.com/i-press-buttons/pathwatch/internal/settings"
 	"github.com/i-press-buttons/pathwatch/internal/store"
 	"github.com/i-press-buttons/pathwatch/internal/web"
@@ -193,14 +195,35 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	}
 	log.Info("monitoring started", "targets", len(sched.States()))
 
+	sys := selfmon.New(selfmon.Options{Store: st, Sched: sched, Log: log})
+	sys.Configure(mgr.Effective().System)
+	mgr.Subscribe(func(c *config.Config) { sys.Configure(c.System) })
+	sys.Start()
+	defer sys.Close()
+	engine.SetSystemHealth(sys.Health)
+
+	pip := publicip.New(publicip.Options{
+		Store: st, Log: log, OnChange: hub.TargetsChanged,
+		Enrich: func(a netip.Addr) publicip.Info {
+			i := en.Lookup(a)
+			return publicip.Info{ASN: i.ASN, ASName: i.ASName, Hostname: i.Hostname}
+		},
+	})
+	pip.Configure(mgr.Effective().PublicIP)
+	mgr.Subscribe(func(c *config.Config) { pip.Configure(c.PublicIP) })
+	pip.Start()
+	defer pip.Close()
+
 	var static fs.FS
 	if sub, err := fs.Sub(webui.Static, "static"); err == nil {
 		static = sub
 	}
 	srv := web.New(web.Deps{
 		Store: st, Sched: sched, Analyzer: an, Enrich: en, Hub: hub, Config: cfg, Settings: mgr, Auth: auth,
-		Notifier: engine.Sender(), Version: version, Logger: log, Static: static,
+		Notifier: engine.Sender(), PublicIP: pip, System: sys, Outbox: engine.Sender(), Version: version, Logger: log, Static: static,
 	})
+	stopDigest := srv.StartDigest(engine.Sender())
+	defer stopDigest()
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.Listen, err)

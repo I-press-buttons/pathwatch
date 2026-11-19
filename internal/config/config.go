@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -62,6 +63,10 @@ type Config struct {
 	Probing ProbingConfig `yaml:"probing"`
 	Enrich  EnrichConfig  `yaml:"enrich"`
 	Metrics MetricsConfig `yaml:"metrics"`
+
+	PublicIP PublicIPConfig `yaml:"public_ip"`
+	System   SystemConfig   `yaml:"system"`
+	Digest   DigestConfig   `yaml:"digest"`
 
 	Defaults  Defaults         `yaml:"defaults"`
 	Status    StatusConfig     `yaml:"status"`
@@ -148,6 +153,61 @@ type EnrichConfig struct {
 // served behind the same Basic auth and Host check as the API.
 type MetricsConfig struct {
 	Enabled bool `yaml:"enabled"`
+}
+
+// PublicIPConfig watches this network's public IPv4 and IPv6 addresses, so an ISP renumbering,
+// a dropped PPPoE session or a failover to a backup line shows up. It is off by default: it
+// contacts a service you did not configure as a target (OpenDNS by default).
+type PublicIPConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Interval between checks (default 5m, minimum 30s).
+	Interval Duration `yaml:"interval" json:"interval_ms"`
+	// Source is "opendns" (default: an A/AAAA query for myip.opendns.com sent to the OpenDNS
+	// resolvers over IPv4 and IPv6) or an http(s) URL that answers with the caller's address as
+	// plain text (for example https://api.ipify.org), requested once over each family.
+	Source string `yaml:"source" json:"source"`
+	// SkipIPv6 checks IPv4 only.
+	SkipIPv6 bool `yaml:"skip_ipv6" json:"skip_ipv6"`
+}
+
+// DigestConfig sends a periodic summary (availability, latency, incidents, public IP changes and
+// monitor health) over the notification channels.
+type DigestConfig struct {
+	// Schedule is off (default), daily or weekly.
+	Schedule string `yaml:"schedule" json:"schedule"`
+	// Time of day it is sent, HH:MM (default 08:00).
+	Time string `yaml:"time" json:"time"`
+	// Weekday of a weekly digest, mon..sun (default mon).
+	Weekday string `yaml:"weekday" json:"weekday,omitempty"`
+	// Timezone of Time (an IANA name; default the server's local time zone).
+	Timezone string `yaml:"timezone" json:"timezone,omitempty"`
+	// Notify limits the channels (webhook, email); default every configured channel.
+	Notify []string `yaml:"notify" json:"notify,omitempty"`
+}
+
+// Digest schedules.
+const (
+	DigestOff    = "off"
+	DigestDaily  = "daily"
+	DigestWeekly = "weekly"
+)
+
+// PublicIPSourceOpenDNS is the default public IP source.
+const PublicIPSourceOpenDNS = "opendns"
+
+// SystemConfig sets when pathwatch reports a problem with itself (the Monitor health card and the
+// monitor_health alert rule).
+type SystemConfig struct {
+	// DiskFreeMinPct: warn when the data folder's file system has less free space than this
+	// percentage (default 5).
+	DiskFreeMinPct float64 `yaml:"disk_free_min_pct" json:"disk_free_min_pct"`
+	// DiskFreeMinBytes: also warn below this many free bytes (default 500 MB).
+	DiskFreeMinBytes int64 `yaml:"disk_free_min_bytes" json:"disk_free_min_bytes"`
+	// NTPServer is asked for the time to measure this machine's clock offset ("" = off, the
+	// default; for example pool.ntp.org). A drifting clock skews every timeline.
+	NTPServer string `yaml:"ntp_server" json:"ntp_server"`
+	// ClockMaxOffset: warn when the clock is off by more than this (default 2s).
+	ClockMaxOffset Duration `yaml:"clock_max_offset" json:"clock_max_offset_ms"`
 }
 
 // Defaults are inherited by every target and probe. In JSON (the web API) durations are
@@ -244,7 +304,29 @@ type DNSProbeConfig struct {
 	Timeout  Duration `yaml:"timeout" json:"timeout_ms,omitempty"`
 	Retries  *int     `yaml:"retries" json:"retries,omitempty"`
 
+	// Answer checks (see DNSAnswerChecks); queries that set none of their own inherit these.
+	DNSAnswerChecks `yaml:",inline"`
+
 	Queries []DNSQueryConfig `yaml:"queries" json:"queries,omitempty"`
+}
+
+// DNSAnswerChecks verify what a resolver answers, not only that it answers. A failed check is
+// recorded as a failed DNS probe ("wrong answer: ..."), so the dns_failure rule alerts on it.
+type DNSAnswerChecks struct {
+	// Expect lists addresses or CIDR prefixes; every address in the answer must be in one of them
+	// (and the answer must hold at least one address).
+	Expect []string `yaml:"expect" json:"expect,omitempty"`
+	// ExpectNXDomain is for a name that must not exist: NXDOMAIN is success, an address in the
+	// answer means the resolver (or the ISP in between) rewrites unknown names.
+	ExpectNXDomain bool `yaml:"expect_nxdomain" json:"expect_nxdomain,omitempty"`
+	// CompareWith is a second resolver (host[:port]) asked the same question; the probe fails when
+	// both return addresses and they have none in common.
+	CompareWith string `yaml:"compare_with" json:"compare_with,omitempty"`
+}
+
+// IsZero reports whether no check is set.
+func (c DNSAnswerChecks) IsZero() bool {
+	return len(c.Expect) == 0 && !c.ExpectNXDomain && c.CompareWith == ""
 }
 
 // DNSQueryConfig is one name a DNS server is asked for. Zero fields inherit from the server.
@@ -255,6 +337,8 @@ type DNSQueryConfig struct {
 	Interval Duration `yaml:"interval" json:"interval_ms,omitempty"`
 	Timeout  Duration `yaml:"timeout" json:"timeout_ms,omitempty"`
 	Retries  *int     `yaml:"retries" json:"retries,omitempty"`
+
+	DNSAnswerChecks `yaml:",inline"`
 }
 
 // UnmarshalYAML accepts a plain host name or a mapping with the fields of DNSQueryConfig.
@@ -264,11 +348,11 @@ func (q *DNSQueryConfig) UnmarshalYAML(n *yaml.Node) error {
 		return nil
 	}
 	if n.Kind != yaml.MappingNode {
-		return fmt.Errorf("line %d: a query is a host name or a mapping with query, record, interval, timeout and retries", n.Line)
+		return fmt.Errorf("line %d: a query is a host name or a mapping with query, record, interval, timeout, retries, expect, expect_nxdomain and compare_with", n.Line)
 	}
 	for i := 0; i+1 < len(n.Content); i += 2 {
 		switch k := n.Content[i].Value; k {
-		case "query", "record", "interval", "timeout", "retries":
+		case "query", "record", "interval", "timeout", "retries", "expect", "expect_nxdomain", "compare_with":
 		default:
 			return fmt.Errorf("line %d: field %s not found in dns query", n.Content[i].Line, k)
 		}
@@ -390,6 +474,45 @@ func (c *Config) applyDefaults() {
 	}
 	c.Status.applyDefaults()
 	c.Alerts.applyDefaults()
+	c.PublicIP.applyDefaults()
+	c.System.applyDefaults()
+	c.Digest.applyDefaults()
+}
+
+func (p *PublicIPConfig) applyDefaults() {
+	if p.Interval == 0 {
+		p.Interval = Duration(5 * time.Minute)
+	}
+	if p.Source = strings.TrimSpace(p.Source); p.Source == "" {
+		p.Source = PublicIPSourceOpenDNS
+	}
+}
+
+func (d *DigestConfig) applyDefaults() {
+	d.Schedule = strings.ToLower(strings.TrimSpace(d.Schedule))
+	if d.Schedule == "" {
+		d.Schedule = DigestOff
+	}
+	if d.Time = strings.TrimSpace(d.Time); d.Time == "" {
+		d.Time = "08:00"
+	}
+	if d.Weekday = strings.ToLower(strings.TrimSpace(d.Weekday)); d.Weekday == "" {
+		d.Weekday = "mon"
+	}
+	d.Timezone = strings.TrimSpace(d.Timezone)
+}
+
+func (s *SystemConfig) applyDefaults() {
+	if s.DiskFreeMinPct == 0 {
+		s.DiskFreeMinPct = 5
+	}
+	if s.DiskFreeMinBytes == 0 {
+		s.DiskFreeMinBytes = 500 << 20
+	}
+	if s.ClockMaxOffset == 0 {
+		s.ClockMaxOffset = Duration(2 * time.Second)
+	}
+	s.NTPServer = strings.TrimSpace(s.NTPServer)
 }
 
 func (s *StatusConfig) applyDefaults() {

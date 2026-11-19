@@ -199,6 +199,7 @@ function build(dlg, body, settings, cfg, id, onSaved) {
   const alertBox = h('div', { class: 'rule-overrides' });
   if (!rules.length) alertBox.append(h('p', { class: 'muted small' }, 'No alert rules are configured. Add rules on the Settings page.'));
   for (const r of rules) {
+    if (r.type === 'public_ip_change' || r.type === 'monitor_health') continue; // not about one target
     const meta = RULE_TYPES[r.type] || { params: [] };
     const on = checkField(r.name, { checked: !disabled.has(r.name) && r.enabled !== false, hint: ` · ${ruleTypeLabel(r.type)}` });
     if (r.enabled === false) { on.input.disabled = true; on.el.title = 'Disabled for all targets (Settings → Alert rules)'; }

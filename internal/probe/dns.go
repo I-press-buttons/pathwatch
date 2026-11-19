@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 )
@@ -17,8 +18,110 @@ type DNSResult struct {
 	RTT     time.Duration
 	RCode   int
 	Answers int
-	Err     error // network failure, timeout or non-NOERROR rcode
+	Addrs   []netip.Addr // the A/AAAA addresses in the answer
+	Err     error        // network failure, timeout, non-NOERROR rcode or a failed answer check
 	OK      bool
+}
+
+// DNSCheck is what a DNS answer must satisfy beyond NOERROR (see config.DNSAnswerChecks).
+type DNSCheck struct {
+	Expect         []netip.Prefix
+	ExpectNXDomain bool
+	CompareWith    string // host:port; "" = no comparison
+}
+
+// WrongAnswerPrefix starts the error of a probe whose resolver answered, but wrongly.
+const WrongAnswerPrefix = "wrong answer: "
+
+func wrongAnswer(f string, a ...any) error {
+	return errors.New(WrongAnswerPrefix + fmt.Sprintf(f, a...))
+}
+
+// maxListed bounds the addresses quoted in an error message.
+const maxListed = 4
+
+func listAddrs(as []netip.Addr) string {
+	var parts []string
+	for i, a := range as {
+		if i == maxListed {
+			parts = append(parts, fmt.Sprintf("+%d more", len(as)-maxListed))
+			break
+		}
+		parts = append(parts, a.String())
+	}
+	return strings.Join(parts, ", ")
+}
+
+func listPrefixes(ps []netip.Prefix) string {
+	var parts []string
+	for _, p := range ps {
+		if p.Bits() == p.Addr().BitLen() {
+			parts = append(parts, p.Addr().String())
+		} else {
+			parts = append(parts, p.String())
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// CheckDNSAnswer applies the expect and expect_nxdomain checks to a result, returning it with
+// OK and Err adjusted. Transport failures (no reply, timeout) are returned unchanged.
+func CheckDNSAnswer(res DNSResult, c DNSCheck) DNSResult {
+	if res.RTT == 0 && res.Err != nil && res.RCode == 0 {
+		return res // no reply at all: nothing to check
+	}
+	if c.ExpectNXDomain {
+		switch {
+		case res.RCode == RCodeNXDomain:
+			res.OK, res.Err = true, nil
+		case res.RCode == RCodeSuccess && len(res.Addrs) > 0:
+			res.OK, res.Err = false, wrongAnswer("a name that should not exist resolved to %s (NXDOMAIN rewritten)", listAddrs(res.Addrs))
+		case res.RCode == RCodeSuccess:
+			res.OK, res.Err = false, wrongAnswer("expected NXDOMAIN, got NOERROR with no address")
+		}
+		return res
+	}
+	if !res.OK || len(c.Expect) == 0 {
+		return res
+	}
+	if len(res.Addrs) == 0 {
+		res.OK, res.Err = false, wrongAnswer("no address in the answer (expected %s)", listPrefixes(c.Expect))
+		return res
+	}
+	var bad []netip.Addr
+	for _, a := range res.Addrs {
+		in := false
+		for _, p := range c.Expect {
+			if p.Contains(a) {
+				in = true
+				break
+			}
+		}
+		if !in {
+			bad = append(bad, a)
+		}
+	}
+	if len(bad) > 0 {
+		res.OK, res.Err = false, wrongAnswer("unexpected %s (expected %s)", listAddrs(bad), listPrefixes(c.Expect))
+	}
+	return res
+}
+
+// CompareDNSAnswer fails res when ref (the same question asked of another resolver) returned
+// addresses and none of them is in res. A failing or empty reference never fails res.
+func CompareDNSAnswer(res, ref DNSResult, refServer string) DNSResult {
+	if !res.OK || !ref.OK || len(res.Addrs) == 0 || len(ref.Addrs) == 0 {
+		return res
+	}
+	for _, a := range res.Addrs {
+		for _, b := range ref.Addrs {
+			if a == b {
+				return res
+			}
+		}
+	}
+	res.OK, res.Err = false, wrongAnswer("%s differs from %s (%s)", listAddrs(res.Addrs), refServer, listAddrs(ref.Addrs))
+	return res
 }
 
 // DNSQuery asks server (host:port) for name/record directly over UDP, retrying over TCP
@@ -50,6 +153,11 @@ func DNSQuery(ctx context.Context, server, name, record string, timeout time.Dur
 		return DNSResult{Err: err}
 	}
 	res := DNSResult{RTT: rtt, RCode: msg.RCode, Answers: len(msg.Answers)}
+	for _, a := range msg.Answers {
+		if a.Type == qtype && a.Addr.IsValid() {
+			res.Addrs = append(res.Addrs, a.Addr.Unmap())
+		}
+	}
 	if msg.RCode != RCodeSuccess {
 		res.Err = fmt.Errorf("rcode %s", RCodeName(msg.RCode))
 		return res

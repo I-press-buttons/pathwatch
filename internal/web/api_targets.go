@@ -62,6 +62,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"auth_enabled":      s.d.Auth.Enabled,
 		"read_only_config":  s.d.Settings == nil,
 		"status_thresholds": s.cfg().Status,
+		"system":            s.systemSummary(),
 	})
 }
 

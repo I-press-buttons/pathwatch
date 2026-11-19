@@ -521,3 +521,44 @@ dns_probes:
 		t.Errorf("A and AAAA of one name: %v", err)
 	}
 }
+
+func TestDNSAnswerChecks(t *testing.T) {
+	cfg, err := Parse([]byte(`
+dns_probes:
+  - name: home
+    server: 192.168.1.5
+    compare_with: 1.1.1.1
+    queries:
+      - query: nas.home.example
+        expect: [192.168.1.10, "10.0.0.0/8"]
+      - query: does-not-exist.example
+        expect_nxdomain: true
+      - plain.example
+`), func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := cfg.ResolveDNSProbes()
+	if len(ps) != 3 {
+		t.Fatalf("want 3 probes, got %d", len(ps))
+	}
+	if len(ps[0].Expect) != 2 || ps[0].Expect[0].String() != "192.168.1.10/32" || ps[0].CompareWith != "1.1.1.1:53" {
+		t.Fatalf("expect/compare not resolved: %+v", ps[0])
+	}
+	if !ps[1].ExpectNXDomain || ps[1].CompareWith != "1.1.1.1:53" {
+		t.Fatalf("nxdomain query: %+v", ps[1])
+	}
+	if ps[2].HasAnswerChecks() && len(ps[2].Expect) > 0 {
+		t.Fatalf("plain query has no expect: %+v", ps[2])
+	}
+
+	for name, y := range map[string]string{
+		"bad prefix": "dns_probes:\n  - {name: a, server: 1.1.1.1, query: x.example, expect: [nope]}\n",
+		"both":       "dns_probes:\n  - {name: a, server: 1.1.1.1, query: x.example, expect: [1.2.3.4], expect_nxdomain: true}\n",
+		"same ref":   "dns_probes:\n  - {name: a, server: 1.1.1.1, query: x.example, compare_with: 1.1.1.1}\n",
+	} {
+		if _, err := Parse([]byte(y), func(string) string { return "" }); err == nil {
+			t.Errorf("%s: expected a validation error", name)
+		}
+	}
+}

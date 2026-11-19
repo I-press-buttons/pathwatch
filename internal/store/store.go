@@ -63,7 +63,10 @@ type Store struct {
 	retCancel context.CancelFunc // cancelled when Close begins; stops retention between chunks
 	retdone   chan struct{}
 	closeMu   sync.Once
+	path      string
 	dropped   atomic.Int64
+	writeErrs atomic.Int64 // failed transactions and statements (monitor health)
+	commitNS  atomic.Int64 // duration of the last writer transaction
 	lastWrit  atomic.Int64 // unix nanos of last successful writer commit
 
 	// writer-goroutine state: only the writer's transactions (op closures) touch these
@@ -141,7 +144,7 @@ func Open(path string, o Options) (*Store, error) {
 	rdb.SetMaxOpenConns(4)
 	rdb.SetMaxIdleConns(4)
 	retCtx, retCancel := context.WithCancel(context.Background())
-	s := &Store{
+	s := &Store{path: path,
 		wdb: wdb, rdb: rdb, opts: o, log: o.Logger, now: o.Now,
 		ops:       make(chan op, 8192),
 		quit:      make(chan struct{}),
@@ -246,6 +249,15 @@ func (s *Store) Aggregator() *Aggregator { return s.agg }
 // Dropped reports how many queued writes were dropped because the writer fell behind.
 func (s *Store) Dropped() int64 { return s.dropped.Load() }
 
+// WriteErrors reports how many writer transactions or statements failed since Open.
+func (s *Store) WriteErrors() int64 { return s.writeErrs.Load() }
+
+// LastCommit is how long the writer's latest transaction took.
+func (s *Store) LastCommit() time.Duration { return time.Duration(s.commitNS.Load()) }
+
+// File is the database file.
+func (s *Store) File() string { return s.path }
+
 // WriterAlive reports whether the writer committed (or was idle) recently.
 func (s *Store) WriterAlive() bool {
 	select {
@@ -312,7 +324,15 @@ func (s *Store) writer() {
 	}
 }
 
-func (s *Store) runTx(batch []op) error {
+func (s *Store) runTx(batch []op) (err error) {
+	start := time.Now()
+	callerErr := false // a synchronous caller's own statement failed (a constraint, say): not a health problem
+	defer func() {
+		s.commitNS.Store(int64(time.Since(start)))
+		if err != nil && !callerErr {
+			s.writeErrs.Add(1)
+		}
+	}()
 	s.stmts.prepare(s.wdb) // outside the transaction: it would hold the only connection
 	tx, err := s.wdb.Begin()
 	if err != nil {
@@ -326,9 +346,11 @@ func (s *Store) runTx(batch []op) error {
 			}
 			if o.done != nil {
 				tx.Rollback()
+				callerErr = true
 				return err // reported to the synchronous caller
 			}
 			s.log.Warn("database statement failed", "err", err)
+			s.writeErrs.Add(1)
 		}
 	}
 	if err := tx.Commit(); err != nil {

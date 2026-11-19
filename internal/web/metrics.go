@@ -184,6 +184,8 @@ func (s *Server) renderMetrics(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 	d.add("pathwatch_outbox_pending", float64(pending))
+	s.systemMetrics(d)
+	s.publicIPMetrics(d)
 	return d.bytes(), nil
 }
 
@@ -306,4 +308,70 @@ func (s *Server) targetMetrics(ctx context.Context, d *metricsDoc, row store.Tar
 		}
 	}
 	return nil
+}
+
+// systemMetrics adds the monitor's own health (only with a health monitor attached).
+func (s *Server) systemMetrics(d *metricsDoc) {
+	if s.d.System == nil {
+		return
+	}
+	snap := s.d.System.Snapshot()
+	d.declare("pathwatch_monitor_health", "gauge", "pathwatch's own health: 0 ok, 1 warning, 2 critical (see /api/system).")
+	d.declare("pathwatch_monitor_issues", "gauge", "Number of current problems with pathwatch itself.")
+	d.declare("pathwatch_disk_free_bytes", "gauge", "Free space of the file system holding the database.")
+	d.declare("pathwatch_disk_free_ratio", "gauge", "Free share (0..1) of the file system holding the database.")
+	d.declare("pathwatch_db_size_bytes", "gauge", "Size of the database file including its write-ahead log.")
+	d.declare("pathwatch_db_writes_dropped_total", "counter", "Measurements dropped because the database writer fell behind, since start.")
+	d.declare("pathwatch_db_write_errors_total", "counter", "Failed database transactions or statements, since start.")
+	d.declare("pathwatch_db_last_commit_seconds", "gauge", "Duration of the database writer's latest transaction.")
+	d.declare("pathwatch_icmp_rounds_total", "counter", "Completed ICMP trace rounds, since start.")
+	d.declare("pathwatch_icmp_rounds_late_total", "counter", "ICMP rounds that started well after their interval, since start.")
+	d.declare("pathwatch_icmp_rounds_discarded_total", "counter", "ICMP rounds dropped because they took too long (suspend or stall), since start.")
+	d.declare("pathwatch_icmp_send_errors_total", "counter", "ICMP rounds whose probes could not be sent, since start.")
+	d.declare("pathwatch_clock_offset_seconds", "gauge", "Offset of this machine's clock from system.ntp_server (positive: this clock is behind). Absent when not measured.")
+	d.declare("pathwatch_goroutines", "gauge", "Number of goroutines.")
+	d.declare("pathwatch_heap_bytes", "gauge", "Bytes of allocated heap objects.")
+	lvl := 0.0
+	switch snap.State {
+	case "warn":
+		lvl = 1
+	case "crit":
+		lvl = 2
+	}
+	d.add("pathwatch_monitor_health", lvl)
+	d.add("pathwatch_monitor_issues", float64(len(snap.Issues)))
+	if snap.DiskKnown {
+		d.add("pathwatch_disk_free_bytes", float64(snap.DiskFreeBytes))
+		d.add("pathwatch_disk_free_ratio", snap.DiskFreePct/100)
+	}
+	d.add("pathwatch_db_size_bytes", float64(snap.DBBytes))
+	d.add("pathwatch_db_writes_dropped_total", float64(snap.DroppedWrites))
+	d.add("pathwatch_db_write_errors_total", float64(snap.WriteErrors))
+	d.add("pathwatch_db_last_commit_seconds", snap.CommitTime.Seconds())
+	d.add("pathwatch_icmp_rounds_total", float64(snap.Rounds.Rounds))
+	d.add("pathwatch_icmp_rounds_late_total", float64(snap.Rounds.Late))
+	d.add("pathwatch_icmp_rounds_discarded_total", float64(snap.Rounds.Discarded))
+	d.add("pathwatch_icmp_send_errors_total", float64(snap.Rounds.SendErrors))
+	if snap.Clock.Measured {
+		d.add("pathwatch_clock_offset_seconds", snap.Clock.Offset.Seconds())
+	}
+	d.add("pathwatch_goroutines", float64(snap.Goroutines))
+	d.add("pathwatch_heap_bytes", float64(snap.HeapBytes))
+}
+
+// publicIPMetrics adds the current public addresses (only while public IP monitoring is on).
+func (s *Server) publicIPMetrics(d *metricsDoc) {
+	m := s.d.PublicIP
+	if m == nil || !m.Config().Enabled {
+		return
+	}
+	d.declare("pathwatch_public_ip_info", "gauge", "The current public address of each family; the value is always 1.")
+	d.declare("pathwatch_public_ip_since_timestamp_seconds", "gauge", "When the current public address was first seen (Unix time).")
+	for _, st := range m.States() {
+		if st.Addr == "" {
+			continue
+		}
+		d.add("pathwatch_public_ip_info", 1, "family", st.Family, "address", st.Addr)
+		d.add("pathwatch_public_ip_since_timestamp_seconds", float64(st.Since.Unix()), "family", st.Family)
+	}
 }

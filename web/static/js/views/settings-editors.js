@@ -1,6 +1,6 @@
 // Settings page editors for the server-side settings: probe defaults, status thresholds,
-// alert rules, notifications, maintenance windows, the heartbeat, DNS probes, data retention
-// and hop enrichment. Each section is saved on the server, applies immediately, and can be
+// alert rules, notifications, maintenance windows, the heartbeat, the digest, DNS probes, public
+// IP monitoring, monitor health, data retention and hop enrichment. Each section is saved on the server, applies immediately, and can be
 // reverted to the config file.
 import { h, clear } from '../util.js';
 import { api } from '../api.js';
@@ -44,6 +44,9 @@ function dnsQueryField(label, settings, opts) {
   f.el.append(h('datalist', { id }, (settings.dns_query_presets || DNS_PRESETS).map((q) => h('option', { value: q }))));
   return f;
 }
+
+/** "a, b c" -> ['a', 'b', 'c'] */
+const splitList = (v) => (v || '').split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
 
 const toggle = (fs, on) => { fs.classList.toggle('disabled', !on); fs.querySelectorAll('input,select,textarea,button').forEach((x) => { x.disabled = !on; }); };
 
@@ -305,6 +308,8 @@ function dnsSection(onChange) {
         const interval = durField('Interval', { value: p.interval_ms, unit: 's', inherit: D.dns_interval_ms, min: 1000 });
         const timeout = durField('Timeout', { value: p.timeout_ms, unit: 's', inherit: D.dns_timeout_ms });
         const retries = numField('Retries', { value: p.retries, inherit: D.retries, min: 0, max: maxRetries, integer: true });
+        const compare = textField('Compare answers with', { value: p.compare_with, placeholder: 'e.g. 1.1.1.1',
+          hint: 'Optional second resolver asked the same question; the probe fails when the two share no address. Best for names with stable answers (CDN names often differ by resolver).' });
         const qlist = h('div', { class: 'query-list' });
         const noQueries = h('p', { class: 'muted small query-empty' });
         const srv = { queries: [] };
@@ -330,9 +335,17 @@ function dnsSection(onChange) {
           const qiv = durField('Interval', { value: qc.interval_ms, unit: 's', min: 1000 });
           const qto = durField('Timeout', { value: qc.timeout_ms, unit: 's' });
           const qrt = numField('Retries', { value: qc.retries, min: 0, max: maxRetries, integer: true });
-          const q = { query, record: qrec, interval: qiv, timeout: qto, retries: qrt };
+          const qexp = textField('Expected answer', { value: (qc.expect || []).join(', '), placeholder: 'e.g. 192.168.1.10 or 10.0.0.0/8',
+            hint: 'Optional: addresses or CIDRs, comma-separated. Any other address in the answer fails the probe.' });
+          const qnx = checkField('Name must not exist (NXDOMAIN)', { checked: qc.expect_nxdomain,
+            hint: ' — for a made-up name; an address in the answer means your resolver or ISP rewrites unknown names.' });
+          const syncNx = () => { qexp.input.disabled = qnx.get(); };
+          qnx.input.addEventListener('change', syncNx); syncNx();
+          const q = { query, record: qrec, interval: qiv, timeout: qto, retries: qrt, expect: qexp, nx: qnx, extra: qc.compare_with ? { compare_with: qc.compare_with } : {} };
           q.row = h('div', { class: 'query-row' },
-            h('div', { class: 'grid-fields' }, query.el, qrec.el, qiv.el, qto.el, qrt.el),
+            h('div', { class: 'query-main' },
+              h('div', { class: 'grid-fields' }, query.el, qrec.el, qiv.el, qto.el, qrt.el, h('div', { class: 'span2' }, qexp.el)),
+              h('div', { class: 'query-check' }, qnx.el)),
             h('button', { class: 'btn sm danger query-remove', type: 'button', title: 'Remove this query', 'aria-label': 'Remove this query',
               onclick: () => removeQuery(q) }, '×'));
           query.input.addEventListener('change', () => picker.sync());
@@ -363,8 +376,10 @@ function dnsSection(onChange) {
           picker.sync();
         };
         srv.queryConfigs = () => srv.queries.map((q) => {
-          const o = { query: q.query.get() };
+          const o = { query: q.query.get(), ...q.extra };
           if (q.record.get()) o.record = q.record.get();
+          if (q.nx.get()) o.expect_nxdomain = true;
+          else { const ex = splitList(q.expect.get()); if (ex.length) o.expect = ex; }
           for (const [k, f] of [['interval_ms', q.interval], ['timeout_ms', q.timeout], ['retries', q.retries]]) {
             const v = f.get();
             if (v != null && !Number.isNaN(v)) o[k] = v;
@@ -381,7 +396,7 @@ function dnsSection(onChange) {
             h('button', { class: 'btn sm', type: 'button', title: 'Give every DNS server the same queries as this one',
               onclick: () => { const qs = srv.queryConfigs(); servers.forEach((o) => { if (o !== srv) o.setQueries(qs.map((x) => ({ ...x }))); }); } }, 'Copy queries to all servers'),
             h('button', { class: 'btn sm danger', type: 'button', onclick: () => { servers.splice(servers.indexOf(srv), 1); srv.row.remove(); empty.hidden = servers.length > 0; } }, 'Remove')),
-          h('div', { class: 'grid-fields' }, name.el, server.el, record.el, interval.el, timeout.el, retries.el),
+          h('div', { class: 'grid-fields' }, name.el, server.el, record.el, interval.el, timeout.el, retries.el, h('div', { class: 'span3' }, compare.el)),
           h('div', { class: 'query-block' },
             h('div', { class: 'query-head' }, h('span', { class: 'lbl' }, 'Queries'), picker.el,
               h('button', { class: 'btn sm', type: 'button', onclick: () => { addQuery({}, true); picker.sync(); } }, '+ Add query')),
@@ -391,6 +406,7 @@ function dnsSection(onChange) {
           const o = clone(p);
           delete o.query;
           o.name = name.get(); o.server = server.get(); o.record = record.get();
+          setOrDelete(o, 'compare_with', compare.get() || null);
           if (!o.name || !o.server) E.add('DNS server: name and server are required.');
           setOrDelete(o, 'interval_ms', E.num(interval));
           setOrDelete(o, 'timeout_ms', E.num(timeout));
@@ -677,6 +693,115 @@ function enrichSection(onChange) {
   });
 }
 
+function publicIPSection(onChange) {
+  return section({
+    key: 'public_ip', title: 'Public IP', onChange,
+    intro: 'Watches this network’s public IPv4 and IPv6 addresses and records every change, so ISP renumbering, a dropped PPPoE session or a failover to a backup line shows up (Overview card, alerts and the digest). Off by default because it contacts a service you did not add as a target.',
+    build(settings) {
+      const v = settings.public_ip.value || {};
+      const on = checkField('Monitor the public IP address', { checked: v.enabled });
+      const src = textField('Source', { value: v.source && v.source !== 'opendns' ? v.source : '', placeholder: 'opendns',
+        hint: 'Blank: ask OpenDNS (myip.opendns.com) over plain DNS. Or an http(s) URL that answers with your address as plain text, e.g. https://api.ipify.org.' });
+      const iv = durField('Check every', { value: v.interval_ms, unit: 'min', inherit: 300000, min: 30000 });
+      const skip6 = checkField('IPv4 only (skip IPv6)', { checked: v.skip_ipv6 });
+      return {
+        body: h('div', null, on.el, h('div', { class: 'grid-fields' }, h('div', { class: 'span2' }, src.el), iv.el), skip6.el),
+        collect() {
+          const E = errorList();
+          const out = { enabled: on.get(), source: src.get() || 'opendns', interval_ms: E.num(iv) || 0, skip_ipv6: skip6.get() };
+          if (out.source !== 'opendns' && !/^https?:\/\/[^/]/i.test(out.source)) E.add('Source must be blank (OpenDNS) or an http(s) URL.');
+          if (out.interval_ms && out.interval_ms < 30000) E.add('Check at most every 30 seconds.');
+          return { value: out, errs: E.errs };
+        },
+      };
+    },
+  });
+}
+
+function systemSection(onChange) {
+  return section({
+    key: 'system', title: 'Monitor health', onChange,
+    intro: 'When pathwatch reports a problem with itself (the Monitor health card and the "Monitor health" alert rule). Database write failures, a stalled writer, late probe rounds and ICMP send errors are always checked.',
+    build(settings) {
+      const v = settings.system.value || {};
+      const pct = numField('Warn below free disk', { value: v.disk_free_min_pct, inherit: 5, min: 0, max: 99, unit: '%' });
+      const mb = numField('or below', { value: v.disk_free_min_bytes ? Math.round(v.disk_free_min_bytes / 1e6) : null, inherit: 500, min: 0, unit: 'MB' });
+      const ntp = textField('NTP server for the clock check', { value: v.ntp_server, placeholder: 'e.g. pool.ntp.org',
+        hint: 'Optional. Measures this machine’s clock offset every 15 minutes; leave blank to skip.' });
+      const off = durField('Warn when the clock is off by more than', { value: v.clock_max_offset_ms, unit: 's', inherit: 2000, min: 100 });
+      return {
+        body: h('div', { class: 'grid-fields' }, pct.el, mb.el, h('div', { class: 'span2' }, ntp.el), off.el),
+        collect() {
+          const E = errorList();
+          const mbv = E.num(mb);
+          const out = { disk_free_min_pct: E.num(pct) || 0, disk_free_min_bytes: mbv ? Math.round(mbv * 1e6) : 0, ntp_server: ntp.get(), clock_max_offset_ms: E.num(off) || 0 };
+          if (out.disk_free_min_pct >= 100) E.add('Free disk must be below 100%.');
+          if (out.clock_max_offset_ms && out.clock_max_offset_ms < 100) E.add('Clock offset: at least 0.1 s.');
+          return { value: out, errs: E.errs };
+        },
+      };
+    },
+  });
+}
+
+function digestSection(onChange) {
+  const sec = section({
+    key: 'digest', title: 'Digest', onChange,
+    intro: 'A regular summary sent over the notification channels: availability and latency per target, alerts, public IP changes and monitor health. Useful to spot slow drift that never crosses an alert threshold.',
+    build(settings) {
+      const v = settings.digest.value || {};
+      const ch = settings.channels || {};
+      const sched = selectField('Send', [['off', 'Off'], ['daily', 'Daily'], ['weekly', 'Weekly']], { value: v.schedule || 'off' });
+      const day = selectField('On', DAYS.map(([k, l]) => [k, l]), { value: v.weekday || 'mon' });
+      const time = textField('At', { value: v.time || '08:00', placeholder: 'HH:MM' });
+      time.input.type = 'time';
+      const tz = textField('Time zone', { value: v.timezone, placeholder: 'server time zone', hint: 'An IANA name such as Europe/London; blank uses the server’s.' });
+      const want = new Set(v.notify || []);
+      const chFields = ['webhook', 'email'].map((c) => {
+        const f = checkField(c === 'webhook' ? 'Webhook' : 'Email', { checked: !want.size || want.has(c), hint: ch[c] ? '' : ' — not configured' });
+        f.name = c;
+        return f;
+      });
+      const syncDay = () => { day.el.hidden = sched.get() !== 'weekly'; };
+      sched.input.addEventListener('change', syncDay); syncDay();
+      const out = h('pre', { class: 'digest-preview', hidden: true });
+      const note = h('span', { class: 'muted small', 'aria-live': 'polite' });
+      const preview = h('button', { class: 'btn sm', type: 'button', onclick: async () => {
+        note.textContent = 'Building…';
+        try {
+          const p = await api.digestPreview();
+          out.textContent = p.title + '\n\n' + p.text;
+          out.hidden = false;
+          note.textContent = p.channels.length ? 'Would go to: ' + p.channels.join(', ') + (p.next ? ' · next scheduled ' + new Date(p.next).toLocaleString() : '') : 'No notification channel configured yet.';
+        } catch (e) { note.textContent = e.message; }
+      } }, 'Preview');
+      const send = h('button', { class: 'btn sm', type: 'button', onclick: async () => {
+        send.disabled = true; note.textContent = 'Sending…';
+        try { const r = await api.sendDigest(); note.textContent = 'Queued for ' + r.channels.join(', ') + '.'; } catch (e) { note.textContent = e.message; } finally { send.disabled = false; }
+      } }, 'Send now');
+      return {
+        body: h('div', null,
+          h('div', { class: 'grid-fields' }, sched.el, day.el, time.el, h('div', { class: 'span2' }, tz.el)),
+          h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Channels:'), chFields.map((f) => f.el)),
+          h('div', { class: 'row' }, preview, send, note),
+          h('p', { class: 'hint' }, 'Preview and Send now use the saved settings and cover the last day (or week).'),
+          out),
+        collect() {
+          const E = errorList();
+          const o = { schedule: sched.get(), time: time.get() || '08:00', weekday: day.get() };
+          if (tz.get()) o.timezone = tz.get();
+          const picked = chFields.filter((f) => f.get()).map((f) => f.name);
+          if (!picked.length) E.add('Pick at least one channel.');
+          if (picked.length === 1) o.notify = picked;
+          if (!/^\d{1,2}:\d{2}$/.test(o.time)) E.add('Time must be HH:MM.');
+          return { value: o, errs: E.errs };
+        },
+      };
+    },
+  });
+  return sec;
+}
+
 /** Builds the editors; returns {els, load()}. onSaved(settings) runs after a save or revert. */
 export function settingsEditors({ onSaved } = {}) {
   let alerts = null;
@@ -692,7 +817,7 @@ export function settingsEditors({ onSaved } = {}) {
   const dns = dnsSection(changed);
   const changedDefaults = (s, key) => { dns.sharedChanged(s); changed(s, key); }; // DNS probes show the shared query
   const sections = [defaultsSection(changedDefaults), statusSection(changed), alerts, notifySection(changed), maintenanceSection(changed),
-    heartbeatSection(changed), dns, retentionSection(changed), enrichSection(changed)];
+    heartbeatSection(changed), digestSection(changed), dns, publicIPSection(changed), systemSection(changed), retentionSection(changed), enrichSection(changed)];
   return {
     els: sections.map((s) => s.el),
     async load() {

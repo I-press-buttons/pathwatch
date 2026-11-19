@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/i-press-buttons/pathwatch/internal/alert"
@@ -126,6 +127,24 @@ type Scheduler struct {
 	started  time.Time
 	flowSeed uint16
 	wg       sync.WaitGroup
+
+	stats roundStats
+}
+
+// roundStats count ICMP rounds for monitor health.
+type roundStats struct {
+	rounds, late, discarded, sendErrs atomic.Int64
+}
+
+// RoundStats are totals since start: completed ICMP rounds, rounds that started late, rounds
+// dropped because they took too long, and rounds with a local send error.
+type RoundStats struct {
+	Rounds, Late, Discarded, SendErrors int64
+}
+
+// RoundStats returns the ICMP round counters.
+func (s *Scheduler) RoundStats() RoundStats {
+	return RoundStats{Rounds: s.stats.rounds.Load(), Late: s.stats.late.Load(), Discarded: s.stats.discarded.Load(), SendErrors: s.stats.sendErrs.Load()}
 }
 
 // New creates a scheduler. Call Start before adding targets.
@@ -632,7 +651,7 @@ func (s *Scheduler) dnsLoop(ctx context.Context, e *dnsEntry) {
 		start := time.Now().UTC()
 		var res probe.DNSResult
 		n := retrying(ctx, e.spec.Retries, e.spec.Timeout, e.spec.Interval, start, func() bool {
-			res = probe.DNSQuery(ctx, e.spec.Server, e.spec.Query, e.spec.Record, e.spec.Timeout)
+			res = dnsAttempt(ctx, e.spec)
 			return res.OK
 		})
 		if ctx.Err() != nil {
@@ -652,6 +671,21 @@ func (s *Scheduler) dnsLoop(ctx context.Context, e *dnsEntry) {
 		case <-t.C:
 		}
 	}
+}
+
+// dnsAttempt runs one DNS probe attempt with its answer checks: expect / expect_nxdomain, then
+// the comparison with the reference resolver (asked only when the answer passed so far).
+func dnsAttempt(ctx context.Context, sp config.DNSProbe) probe.DNSResult {
+	res := probe.DNSQuery(ctx, sp.Server, sp.Query, sp.Record, sp.Timeout)
+	if !sp.HasAnswerChecks() {
+		return res
+	}
+	res = probe.CheckDNSAnswer(res, probe.DNSCheck{Expect: sp.Expect, ExpectNXDomain: sp.ExpectNXDomain})
+	if sp.CompareWith != "" && res.OK && !sp.ExpectNXDomain {
+		ref := probe.DNSQuery(ctx, sp.CompareWith, sp.Query, sp.Record, sp.Timeout)
+		res = probe.CompareDNSAnswer(res, ref, sp.CompareWith)
+	}
+	return res
 }
 
 func jitter(d time.Duration) time.Duration {

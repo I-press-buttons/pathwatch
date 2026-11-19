@@ -32,6 +32,9 @@ const (
 	KeyHeartbeat = "heartbeat"
 	KeyRetention = "retention"
 	KeyEnrich    = "enrich"
+	KeyPublicIP  = "public_ip"
+	KeySystem    = "system"
+	KeyDigest    = "digest"
 )
 
 // ReverseDNSSetter turns hop reverse DNS lookups on or off (the enricher).
@@ -71,6 +74,7 @@ type Manager struct {
 	ov   config.Overrides
 	eng  Engine
 	rdns ReverseDNSSetter
+	subs []func(*config.Config)
 	eff  atomic.Pointer[config.Config]
 }
 
@@ -108,6 +112,14 @@ func (m *Manager) SetEnricher(r ReverseDNSSetter) {
 	if r != nil {
 		r.SetReverseDNS(m.eff.Load().ReverseDNSEnabled())
 	}
+	m.mu.Unlock()
+}
+
+// Subscribe registers fn to receive the effective configuration whenever it is applied (UI
+// edits and SIGHUP reloads). It is called with m's lock held, so it must not call back into m.
+func (m *Manager) Subscribe(fn func(*config.Config)) {
+	m.mu.Lock()
+	m.subs = append(m.subs, fn)
 	m.mu.Unlock()
 }
 
@@ -196,6 +208,18 @@ func (m *Manager) decodeOverrides(raw map[string]string) config.Overrides {
 	var en config.EnrichSettings
 	if dec(KeyEnrich, &en) {
 		ov.Enrich = &en
+	}
+	var pip config.PublicIPConfig
+	if dec(KeyPublicIP, &pip) {
+		ov.PublicIP = &pip
+	}
+	var sys config.SystemConfig
+	if dec(KeySystem, &sys) {
+		ov.System = &sys
+	}
+	var dg config.DigestConfig
+	if dec(KeyDigest, &dg) {
+		ov.Digest = &dg
 	}
 	return ov
 }
@@ -377,6 +401,9 @@ func (m *Manager) push(eff *config.Config, reloadEngine bool) error {
 	if reloadEngine && m.eng != nil {
 		m.eng.Reload(eff)
 	}
+	for _, fn := range m.subs {
+		fn(eff)
+	}
 	return nil
 }
 
@@ -507,6 +534,27 @@ func (m *Manager) SetRetention(r *config.RetentionSettings) error {
 // SetEnrich stores the hop enrichment settings edited in the UI (nil reverts).
 func (m *Manager) SetEnrich(e *config.EnrichSettings) error {
 	return m.setSection(KeyEnrich, e, e == nil, func(o *config.Overrides) { o.Enrich = e })
+}
+
+// SetPublicIP stores the public IP monitoring settings edited in the UI (nil reverts).
+func (m *Manager) SetPublicIP(p *config.PublicIPConfig) error {
+	if p != nil {
+		p.Source = strings.TrimSpace(p.Source)
+	}
+	return m.setSection(KeyPublicIP, p, p == nil, func(o *config.Overrides) { o.PublicIP = p })
+}
+
+// SetSystem stores the monitor health thresholds edited in the UI (nil reverts).
+func (m *Manager) SetSystem(v *config.SystemConfig) error {
+	if v != nil {
+		v.NTPServer = strings.TrimSpace(v.NTPServer)
+	}
+	return m.setSection(KeySystem, v, v == nil, func(o *config.Overrides) { o.System = v })
+}
+
+// SetDigest stores the digest schedule edited in the UI (nil reverts).
+func (m *Manager) SetDigest(d *config.DigestConfig) error {
+	return m.setSection(KeyDigest, d, d == nil, func(o *config.Overrides) { o.Digest = d })
 }
 
 // ---------------------------------------------------------------------------

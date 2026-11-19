@@ -99,8 +99,36 @@ targets:
 #       - query: facebook.com            # a query can override them
 #         record: AAAA
 #         interval: 10s
+#       - query: nas.home.example        # check the answer, not just that one came back
+#         expect: [192.168.1.10]         # addresses or CIDRs
+#       - query: no-such-name.example
+#         expect_nxdomain: true          # an answer here means unknown names are rewritten
 #   - name: cloudflare
 #     server: 1.1.1.1
+#     # compare_with: 9.9.9.9            # fail when two resolvers share no address
+
+# Public IP: watch this network's public IPv4/IPv6 address (ISP renumbering,
+# PPPoE reconnects, failover to a backup line). Off by default because it asks
+# OpenDNS (myip.opendns.com); set source to an http(s) URL that answers with
+# the address as plain text to use another service.
+# public_ip:
+#   enabled: true
+#   interval: 5m
+#   source: opendns                      # or e.g. https://api.ipify.org
+#   skip_ipv6: false
+#
+# Monitor health: when pathwatch warns about itself.
+# system:
+#   disk_free_min_pct: 5
+#   ntp_server: pool.ntp.org             # optional clock offset check
+#   clock_max_offset: 2s
+#
+# Digest: a daily or weekly summary over the notification channels.
+# digest:
+#   schedule: weekly                     # off | daily | weekly
+#   time: "08:00"
+#   weekday: mon
+#   timezone: Europe/London
 
 # Alerting. Rules apply to every target that has the probes a rule needs.
 # Targets can disable rules or override parameters:
@@ -145,6 +173,11 @@ alerts:
       type: route_change
       enabled: false                     # notify whenever the path changes
       # notify: [webhook]                # per-rule channel routing (default: all)
+    - name: wan-ip
+      type: public_ip_change             # your public IP changed (turn on public_ip below)
+    - name: self
+      type: monitor_health               # pathwatch itself: disk space, database, late probes, clock
+      sustain: 5m
   cooldown: 30m
   clear_ratio: 0.7
   # maintenance_windows:

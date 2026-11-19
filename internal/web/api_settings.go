@@ -64,6 +64,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"retention": sectionJSON{source(ov.Retention != nil), eff.Storage.RetentionSettings(), file.Storage.RetentionSettings()},
 		"enrich": sectionJSON{source(ov.Enrich != nil),
 			config.EnrichSettings{ReverseDNS: eff.ReverseDNSEnabled()}, config.EnrichSettings{ReverseDNS: file.ReverseDNSEnabled()}},
+		"public_ip":         sectionJSON{source(ov.PublicIP != nil), eff.PublicIP, file.PublicIP},
+		"system":            sectionJSON{source(ov.System != nil), eff.System, file.System},
+		"digest":            sectionJSON{source(ov.Digest != nil), eff.Digest, file.Digest},
 		"notify_env_prefix": config.NotifyEnvPrefix,
 		"dns_query_presets": config.DNSQueryPresets,
 		"channels": map[string]bool{
@@ -142,6 +145,24 @@ func (s *Server) handlePutSetting(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		err = s.d.Settings.SetEnrich(&v)
+	case "public_ip":
+		var v config.PublicIPConfig
+		if !decodeStrict(w, r, &v) {
+			return
+		}
+		err = s.d.Settings.SetPublicIP(&v)
+	case "system":
+		var v config.SystemConfig
+		if !decodeStrict(w, r, &v) {
+			return
+		}
+		err = s.d.Settings.SetSystem(&v)
+	case "digest":
+		var v config.DigestConfig
+		if !decodeStrict(w, r, &v) {
+			return
+		}
+		err = s.d.Settings.SetDigest(&v)
 	default:
 		writeError(w, http.StatusNotFound, "unknown settings section")
 		return
@@ -178,6 +199,12 @@ func (s *Server) handleDeleteSetting(w http.ResponseWriter, r *http.Request) {
 		err = s.d.Settings.SetRetention(nil)
 	case "enrich":
 		err = s.d.Settings.SetEnrich(nil)
+	case "public_ip":
+		err = s.d.Settings.SetPublicIP(nil)
+	case "system":
+		err = s.d.Settings.SetSystem(nil)
+	case "digest":
+		err = s.d.Settings.SetDigest(nil)
 	default:
 		writeError(w, http.StatusNotFound, "unknown settings section")
 		return

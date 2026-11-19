@@ -150,3 +150,88 @@ func TestRouteChangeDuringLocalOutageIsSuppressed(t *testing.T) {
 	}
 	want(t, got.State == "suppressed" && got.SuppressedReason == "local_outage", "%+v", got)
 }
+
+func TestPublicIPChangeIsAOneShotAlert(t *testing.T) {
+	h := newHarness(t, `
+alerts:
+  rules:
+    - name: wan-ip
+      type: public_ip_change
+`)
+	ins := func(ts time.Time, details string) {
+		t.Helper()
+		if _, err := h.st.InsertEvent(store.Event{Kind: EventPublicIP, From: ts, Details: []byte(details)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// the first address ever seen is not a change
+	ins(t0.Add(5*time.Second), `{"family":"ipv4","addr":"203.0.113.1"}`)
+	h.minute(at(0), LocalState{}, cleanMinute(1, "t1"))
+	want(t, len(h.alerts()) == 0, "first sighting must not alert: %+v", h.alerts())
+
+	// a change during a local outage still notifies
+	ins(t0.Add(70*time.Second), `{"family":"ipv4","addr":"198.51.100.7","previous":"203.0.113.1","asn":64501,"as_name":"Backup LTE","prev_asn":64500,"prev_as_name":"Fiber ISP"}`)
+	h.minute(at(1), LocalState{Down: true}, cleanMinute(1, "t1"))
+	ipAlerts := func() []store.Alert {
+		var out []store.Alert
+		for _, a := range h.alerts() {
+			if a.RuleType == "public_ip_change" {
+				out = append(out, a)
+			}
+		}
+		return out
+	}
+	al := ipAlerts()
+	want(t, len(al) == 1 && al[0].RuleType == "public_ip_change" && al[0].State == "resolved" && al[0].TargetID == nil, "alerts %+v", al)
+	want(t, strings.Contains(al[0].Message, "203.0.113.1 to 198.51.100.7") && strings.Contains(al[0].Message, "different network"), "message %q", al[0].Message)
+	h.minute(at(2), LocalState{}, cleanMinute(1, "t1"))
+	want(t, len(ipAlerts()) == 1, "handled once")
+	h.flush()
+	var n []Notification
+	for _, x := range h.hook.notes() {
+		if x.RuleType == "public_ip_change" {
+			n = append(n, x)
+		}
+	}
+	want(t, len(n) == 1 && n[0].State == StateEvent && n[0].Target == "public IP", "one event notification: %+v", n)
+}
+
+func TestMonitorHealthRule(t *testing.T) {
+	h := newHarness(t, `
+alerts:
+  rules:
+    - name: self
+      type: monitor_health
+      sustain: 2m
+`)
+	bad, msg := false, ""
+	h.eng.SetSystemHealth(func() (bool, string) { return bad, msg })
+	h.minute(at(0), LocalState{}, cleanMinute(1, "t1"))
+	want(t, len(h.alerts()) == 0, "healthy")
+	bad, msg = true, "Low disk space for the database: 100 MB free"
+	h.minute(at(1), LocalState{Down: true}, cleanMinute(1, "t1"))
+	var self []store.Alert
+	for _, a := range h.alerts() {
+		if a.RuleType == "monitor_health" {
+			self = append(self, a)
+		}
+	}
+	want(t, len(self) == 0, "pending until sustained: %+v", self)
+	h.minute(at(2), LocalState{Down: true}, cleanMinute(1, "t1")) // 2 minutes of data: sustained
+	self = nil
+	for _, a := range h.alerts() {
+		if a.RuleType == "monitor_health" {
+			self = append(self, a)
+		}
+	}
+	want(t, len(self) == 1 && self[0].State == "firing" && strings.Contains(self[0].Message, "Low disk space"), "fires, not suppressed by a local outage: %+v", self)
+	bad = false
+	for i := 4; i <= 7; i++ {
+		h.minute(at(i), LocalState{}, cleanMinute(1, "t1"))
+	}
+	for _, a := range h.alerts() {
+		if a.RuleType == "monitor_health" {
+			want(t, a.State == "resolved", "resolves once healthy for sustain: %s", a.State)
+		}
+	}
+}

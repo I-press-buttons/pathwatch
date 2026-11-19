@@ -83,6 +83,15 @@ type RuleEngine struct {
 	lastPrune  time.Time
 	cur        time.Time // data time of the observation being processed
 	ownSender  bool      // the engine built the sender from the config (and reconfigures it on reload)
+	sysHealth  func() (bad bool, msg string)
+}
+
+// SetSystemHealth attaches the monitor's own health check, evaluated every minute by the
+// monitor_health rule.
+func (e *RuleEngine) SetSystemHealth(fn func() (bad bool, msg string)) {
+	e.mu.Lock()
+	e.sysHealth = fn
+	e.mu.Unlock()
 }
 
 // NewRuleEngine creates the engine, restores active alerts, cooldowns and the once-per-event
@@ -533,6 +542,7 @@ func (e *RuleEngine) HandleMinute(m Minute) {
 		e.evalLatency(0, pm.Label, pm, "dns_latency", end)
 	}
 	e.handleRouteChanges()
+	e.evalMonitorHealth(end)
 	e.housekeeping(end)
 }
 
@@ -767,14 +777,22 @@ func (e *RuleEngine) evalLatency(target int64, tname string, pm ProbeMinute, rul
 // handleRouteChanges turns new route_change events from the store into one-shot alerts.
 func (e *RuleEngine) handleRouteChanges() {
 	now := e.now()
-	evs, err := e.st.Events(store.EventQuery{From: e.routeFrom, To: now.Add(time.Minute), Kinds: []string{store.EventRouteChange}})
+	evs, err := e.st.Events(store.EventQuery{From: e.routeFrom, To: now.Add(time.Minute), Kinds: []string{store.EventRouteChange, EventPublicIP}})
 	if err != nil {
 		e.log.Warn("reading route changes failed", "err", err)
 		return
 	}
 	sort.Slice(evs, func(i, j int) bool { return evs[i].ID < evs[j].ID })
 	for _, ev := range evs {
-		if e.routeSeen[ev.ID] || ev.TargetID == nil || ev.From.Before(e.routeFrom) {
+		if e.routeSeen[ev.ID] || ev.From.Before(e.routeFrom) {
+			continue
+		}
+		if ev.Kind == EventPublicIP {
+			e.routeSeen[ev.ID] = true
+			e.publicIPChange(ev)
+			continue
+		}
+		if ev.TargetID == nil {
 			continue
 		}
 		e.routeSeen[ev.ID] = true
@@ -813,4 +831,88 @@ func (e *RuleEngine) oneShot(tid int64, tname string, r config.RuleConfig, ev st
 	}
 	st.alert, st.details = a, d
 	e.save(st, reason == "")
+}
+
+// ---------------------------------------------------------------------------
+// public_ip_change
+
+// EventPublicIP is the store event kind of a public address (internal/publicip writes them).
+const EventPublicIP = "public_ip"
+
+// RulePublicIPChange is the rule type that notifies when the public address changes.
+const RulePublicIPChange = "public_ip_change"
+
+// publicIPChange turns a recorded public address change (an event with a previous address) into
+// a one-shot alert of every public_ip_change rule. The first address ever seen is not a change.
+func (e *RuleEngine) publicIPChange(ev store.Event) {
+	var d struct {
+		Family   string `json:"family"`
+		Addr     string `json:"addr"`
+		Previous string `json:"previous"`
+		ASN      int    `json:"asn"`
+		ASName   string `json:"as_name"`
+		PrevASN  int    `json:"prev_asn"`
+		PrevName string `json:"prev_as_name"`
+	}
+	if json.Unmarshal(ev.Details, &d) != nil || d.Previous == "" || d.Addr == "" {
+		return
+	}
+	fam := "IPv4"
+	if d.Family == "ipv6" {
+		fam = "IPv6"
+	}
+	msg := fmt.Sprintf("Public %s address changed from %s to %s", fam, d.Previous, d.Addr)
+	if d.ASN != 0 && d.PrevASN != 0 && d.ASN != d.PrevASN {
+		msg += fmt.Sprintf(": a different network (AS%d %s, was AS%d %s), for example a failover to a backup connection", d.ASN, d.ASName, d.PrevASN, d.PrevName)
+	} else if d.ASN != 0 {
+		msg += fmt.Sprintf(" (AS%d %s)", d.ASN, d.ASName)
+	}
+	for _, r := range e.cfg.rulesFor("", RulePublicIPChange) {
+		st := &ruleState{key: stateKey{0, r.Name, 0}, rtype: RulePublicIPChange, rule: r, tname: "public IP"}
+		at := ev.From.UTC()
+		reason := e.suppressReason(st, at)
+		end := at
+		a := &store.Alert{
+			Rule: r.Name, RuleType: RulePublicIPChange, State: StateResolved, SuppressedReason: reason,
+			StartedAt: at, EndedAt: &end, Message: msg,
+		}
+		if reason != "" {
+			a.State = "suppressed"
+		}
+		st.alert = a
+		st.details = map[string]any{"event_id": ev.ID, "family": d.Family, "addr": d.Addr, "previous": d.Previous}
+		if d.ASN != 0 {
+			st.details["asn"], st.details["as_name"] = d.ASN, d.ASName
+		}
+		e.save(st, reason == "")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// monitor_health
+
+// RuleMonitorHealth is the rule type that alerts on problems with pathwatch itself.
+const RuleMonitorHealth = "monitor_health"
+
+func (e *RuleEngine) evalMonitorHealth(end time.Time) {
+	if e.sysHealth == nil {
+		return
+	}
+	rules := e.cfg.rulesFor("", RuleMonitorHealth)
+	if len(rules) == 0 {
+		return
+	}
+	bad, msg := e.sysHealth()
+	for _, r := range rules {
+		st := e.state(stateKey{0, r.Name, 0}, RuleMonitorHealth, r, "pathwatch", "")
+		st.rule = r
+		if bad && st.active() && st.alert.Message != "pathwatch: "+msg {
+			st.alert.Message = "pathwatch: " + msg // keep the current problems visible
+			st.dirty = true
+		}
+		e.step(st, obs{
+			at: end, breach: bad, clear: !bad, hold: r.Sustain.D(), clearHold: r.Sustain.D(),
+			since: end.Add(-time.Minute), clearFrom: end.Add(-time.Minute), msg: "pathwatch: " + msg,
+		})
+	}
 }

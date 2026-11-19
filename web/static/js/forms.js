@@ -116,6 +116,8 @@ export const RULE_TYPES = {
   dns_latency: { label: 'DNS latency', desc: 'DNS response time well above its baseline', params: ['multiplier', 'min_delta_ms', 'sustain_ms', 'baseline_window_ms', 'min_baseline_ms'] },
   cert_expiry: { label: 'Certificate expiry', desc: 'An HTTPS certificate expires soon', params: ['warn_before_ms'] },
   route_change: { label: 'Route change', desc: 'The network path changed (one notification per change)', params: [] },
+  public_ip_change: { label: 'Public IP change', desc: 'Your public IPv4 or IPv6 address changed (needs public IP monitoring; one notification per change)', params: [] },
+  monitor_health: { label: 'Monitor health', desc: 'pathwatch itself has a problem: low disk space, failing database writes, late probe rounds or a drifting clock', params: ['sustain_ms'] },
 };
 
 export const RULE_PARAMS = {

@@ -147,7 +147,9 @@ const valueSaveEvery = 5 * time.Minute
 
 // suppressReason decides whether an alert starting now must not be sent, and why.
 func (e *RuleEngine) suppressReason(st *ruleState, at time.Time) string {
-	if st.rtype != RuleLocalConnectivity && e.local.Down {
+	// a public address change is news about the local connection itself (it usually follows a
+	// reconnect), so a local outage does not hold it back
+	if st.rtype != RuleLocalConnectivity && st.rtype != RulePublicIPChange && st.rtype != RuleMonitorHealth && e.local.Down {
 		return SuppressLocalOutage
 	}
 	now := e.now()
@@ -174,7 +176,9 @@ func (e *RuleEngine) suppressReason(st *ruleState, at time.Time) string {
 }
 
 // oneShot rule types are not subject to the cooldown (they fire once per event or certificate).
-func oneShot(ruleType string) bool { return ruleType == "cert_expiry" || ruleType == "route_change" }
+func oneShot(ruleType string) bool {
+	return ruleType == "cert_expiry" || ruleType == "route_change" || ruleType == RulePublicIPChange
+}
 
 func (e *RuleEngine) silences() []SilenceScope {
 	list, err := e.st.Silences(e.now())
@@ -345,7 +349,7 @@ func (e *RuleEngine) notification(st *ruleState, a *store.Alert) Notification {
 	if a.State == StateResolved {
 		n.State = StateResolved
 	}
-	if st.rtype == "route_change" {
+	if st.rtype == "route_change" || st.rtype == RulePublicIPChange {
 		n.State = StateEvent
 	}
 	var d struct {

@@ -17,6 +17,9 @@ type Overrides struct {
 	Heartbeat   *HeartbeatConfig
 	Retention   *RetentionSettings
 	Enrich      *EnrichSettings
+	PublicIP    *PublicIPConfig
+	System      *SystemConfig
+	Digest      *DigestConfig
 }
 
 // WithOverrides returns the effective configuration: c with the UI overrides applied, the
@@ -61,6 +64,17 @@ func (c *Config) WithOverrides(o Overrides, edited map[string]TargetConfig, ui [
 	if o.Enrich != nil {
 		v := o.Enrich.ReverseDNS
 		e.Enrich.ReverseDNS = &v
+	}
+	if o.PublicIP != nil {
+		e.PublicIP = *o.PublicIP
+	}
+	if o.System != nil {
+		e.System = *o.System
+	}
+	e.Digest.Notify = append([]string(nil), c.Digest.Notify...)
+	if o.Digest != nil {
+		e.Digest = *o.Digest
+		e.Digest.Notify = append([]string(nil), o.Digest.Notify...)
 	}
 	e.Targets = append([]TargetConfig(nil), c.Targets...)
 	for i, tc := range e.Targets {

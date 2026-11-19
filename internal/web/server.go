@@ -16,13 +16,16 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/i-press-buttons/pathwatch/internal/alert"
 	"github.com/i-press-buttons/pathwatch/internal/analyze"
 	"github.com/i-press-buttons/pathwatch/internal/config"
 	"github.com/i-press-buttons/pathwatch/internal/enrich"
+	"github.com/i-press-buttons/pathwatch/internal/publicip"
 	"github.com/i-press-buttons/pathwatch/internal/scheduler"
+	"github.com/i-press-buttons/pathwatch/internal/selfmon"
 	"github.com/i-press-buttons/pathwatch/internal/settings"
 	"github.com/i-press-buttons/pathwatch/internal/store"
 )
@@ -38,6 +41,9 @@ type Deps struct {
 	Settings *settings.Manager // optional: UI-edited settings and the effective configuration
 	Resolver Resolver          // optional: for /api/resolve (default net.DefaultResolver)
 	Notifier Notifier          // optional: test notifications (the rule engine's outbox sender)
+	PublicIP *publicip.Monitor // optional: public address monitoring
+	System   *selfmon.Monitor  // optional: the monitor's own health
+	Outbox   Outbox            // optional: queues digests (the rule engine's outbox sender)
 	Auth     config.Auth
 	Version  string
 	Logger   *slog.Logger
@@ -58,6 +64,10 @@ type Server struct {
 	files   http.Handler
 	limiter *authLimiter
 	tests   *channelTests
+
+	digest     *digester
+	digestMu   sync.Mutex
+	digestSent time.Time // last manual digest send
 }
 
 // New builds the server.
@@ -137,6 +147,11 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/targets/{id}/report", s.handleReport)
 	m.HandleFunc("GET /api/dns", s.handleDNS)
 	m.HandleFunc("GET /api/network", s.handleNetwork)
+	m.HandleFunc("GET /api/public-ip", s.handlePublicIP)
+	m.HandleFunc("GET /api/system", s.handleSystem)
+	m.HandleFunc("GET /api/digest/preview", s.handleDigestPreview)
+	m.HandleFunc("POST /api/digest/send", s.handleDigestSend)
+	m.HandleFunc("POST /api/public-ip/check", s.handlePublicIPCheck)
 	m.HandleFunc("GET /api/alerts", s.handleAlerts)
 	m.HandleFunc("GET /api/events", s.handleEvents)
 	m.HandleFunc("GET /api/silences", s.handleSilences)

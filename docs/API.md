@@ -26,9 +26,56 @@ Resolution tier is chosen by the server: raw rounds for ranges ≤ 6h, 1-minute 
   "active_alerts": 1,
   "auth_enabled": true,
   "read_only_config": false,          // true when settings cannot be edited (no settings manager)
-  "status_thresholds": {"degraded_loss_pct": 5, "degraded_http_success_pct": 95}
+  "status_thresholds": {"degraded_loss_pct": 5, "degraded_http_success_pct": 95},
+  "system": {"state": "ok", "issues": []}   // monitor health summary (see /api/system); null when unavailable
 }
 ```
+
+## Monitor health
+
+`GET /api/system`: pathwatch's own health (`state` ok | warn | crit; `issues` lists `{code, severity, message}`
+with codes `disk_low`, `writer_stalled`, `write_errors`, `writes_dropped`, `scheduler`, `rounds_late`,
+`send_errors`, `clock_offset`).
+```json
+{
+  "at": 1759500000000, "state": "warn",
+  "issues": [{"code": "disk_low", "severity": "warn", "message": "Low disk space for the database: 3.2 GB free (3.1%) in /data"}],
+  "disk": {"known": true, "dir": "/data", "free_bytes": 3200000000, "total_bytes": 100000000000, "free_pct": 3.1},
+  "database": {"size_bytes": 52000000, "wal_bytes": 4000000, "writer_alive": true, "dropped_writes": 0, "write_errors": 0, "last_commit_ms": 1.4},
+  "probing": {"healthy": true, "reason": null, "rounds_10m": 1500, "late_10m": 0, "discarded_10m": 0, "send_errors_10m": 0,
+              "rounds_total": 90000, "late_total": 3, "discarded_total": 1, "send_errors_total": 0},
+  "clock": {"server": "pool.ntp.org", "checked": 1759499900000, "error": null, "offset_ms": 12.5, "rtt_ms": 20.1},  // {"server": null} when off
+  "process": {"uptime_s": 3600, "goroutines": 40, "heap_bytes": 9000000, "version": "0.1.0"}
+}
+```
+
+## Public IP
+
+`GET /api/public-ip`: the current public addresses and the changes of the last 90 days (newest first, at most 50).
+`available` is false when the server has no public IP monitor; while `enabled` is false nothing is checked.
+```json
+{
+  "available": true, "enabled": true, "source": "opendns", "interval_ms": 300000, "skip_ipv6": false,
+  "current": [
+    {"family": "ipv4", "addr": "198.51.100.7", "since": 1759400000000, "last_checked": 1759500000000, "last_ok": 1759500000000,
+     "last_error": null, "pending": null, "asn": 64500, "as_name": "Example ISP", "hostname": null},
+    {"family": "ipv6", "addr": null, "since": null, "last_checked": 1759500000000, "last_ok": null,
+     "last_error": "no IPv6 connectivity", "pending": null, "asn": null, "as_name": null, "hostname": null}
+  ],
+  "history": [{"id": 9, "family": "ipv4", "addr": "198.51.100.7", "previous": "203.0.113.1", "from": 1759400000000, "to": null, "asn": 64500, "as_name": "Example ISP"}]
+}
+```
+`pending` is a different address seen once, waiting for the confirming check 30 s later.
+`POST /api/public-ip/check` runs a check now (also while monitoring is off) and returns the same body.
+
+## Digest
+
+`GET /api/digest/preview`: the digest for the period ending now (the last day, or week for a weekly schedule),
+as it would be sent: `{"name": "weekly summary", "title": "pathwatch weekly summary", "from", "to", "text",
+"targets": [...], "alerts": 3, "channels": ["email"], "schedule": "weekly", "next": 1759734000000}`.
+
+`POST /api/digest/send` queues it now on the digest's channels → `200 {"queued": true, "name", "channels"}`;
+`409` without a configured channel; `429` with `Retry-After` within 30 s of the previous send.
 
 ## Network verdict
 
@@ -87,6 +134,8 @@ Label values are escaped (`\\`, `\"`, `\n`). Hops are labelled by `ttl`, never b
 | `pathwatch_hop_loss_ratio`, `pathwatch_hop_rtt_avg_seconds` | `target`, `ttl` |
 | `pathwatch_probe_total_seconds`, `_dns_seconds`, `_connect_seconds`, `_tls_seconds`, `_ttfb_seconds`, `_transfer_seconds`, `_error_ratio`, `_http_status`, `_cert_expiry_timestamp_seconds` | `target`, `probe`, `type` |
 | `pathwatch_alerts_active`, `pathwatch_outbox_pending` | none |
+| `pathwatch_monitor_health` (0 ok, 1 warn, 2 crit), `_monitor_issues`, `pathwatch_disk_free_bytes`, `_disk_free_ratio`, `pathwatch_db_size_bytes`, `_db_writes_dropped_total`, `_db_write_errors_total`, `_db_last_commit_seconds`, `pathwatch_icmp_rounds_total`, `_icmp_rounds_late_total`, `_icmp_rounds_discarded_total`, `_icmp_send_errors_total`, `pathwatch_clock_offset_seconds` (with `system.ntp_server`), `pathwatch_goroutines`, `pathwatch_heap_bytes` | none |
+| `pathwatch_public_ip_info` (value 1), `pathwatch_public_ip_since_timestamp_seconds` (only while public IP monitoring is on) | `family`, `address` / `family` |
 | `pathwatch_build_info` | `version` (value 1) |
 
 `target_up`/`target_loss_ratio` use the destination (ICMP, else the TCP or HTTP probe); they are omitted
@@ -235,6 +284,9 @@ config file until reverted. Changes apply immediately (no restart).
   "heartbeat":  {"source": "file", "value": {"url": "", "interval_ms": 300000}, "file": {...}},
   "retention":  {"source": "file", "value": {"raw_retention_ms": 604800000, "rollup_1m_retention_ms": 7776000000, "rollup_1h_retention_ms": 0}, "file": {...}},
   "enrich":     {"source": "file", "value": {"reverse_dns": true}, "file": {...}},
+  "public_ip":  {"source": "ui", "value": {"enabled": true, "interval_ms": 300000, "source": "opendns", "skip_ipv6": false}, "file": {...}},
+  "system":     {"source": "file", "value": {"disk_free_min_pct": 5, "disk_free_min_bytes": 500000000, "ntp_server": "", "clock_max_offset_ms": 2000}, "file": {...}},
+  "digest":     {"source": "file", "value": {"schedule": "off", "time": "08:00", "weekday": "mon"}, "file": {...}},
   "notify_env_prefix": "PATHWATCH_NOTIFY_",
   "dns_query_presets": ["google.com", "youtube.com", "facebook.com", ...],
   "channels": {"webhook": true, "email": false},
@@ -255,7 +307,9 @@ restores. Value shapes:
   `retries`, and `queries[]` (`query`, and optional `record`, `interval_ms`, `timeout_ms`,
   `retries` that override the server's). Each query runs as its own probe. A server without
   queries looks up `defaults.dns_query`. The older single `query` field is still accepted (not
-  together with `queries`).
+  together with `queries`). Answer checks, on the server or a query (a query's own replace the
+  server's): `expect[]` (addresses or CIDRs), `expect_nxdomain`, `compare_with` (a second
+  resolver); a failed check is recorded as a DNS failure starting with `wrong answer:`.
 
 `dns_query_presets` lists the popular names the UI offers as DNS queries.
 - `maintenance_windows[]`: `name`, `days` (`mon`..`sun`), `start` and `end` (`HH:MM`; an end at
@@ -275,6 +329,12 @@ restores. Value shapes:
   `rollup_1h_retention_ms`; 0 keeps data forever. A shorter period deletes older data at the next
   hourly cleanup.
 - `enrich`: `reverse_dns`.
+- `public_ip`: `enabled`, `interval_ms` (at least 30 s), `source` (`opendns` or an http(s) URL),
+  `skip_ipv6`.
+- `system`: `disk_free_min_pct`, `disk_free_min_bytes`, `ntp_server` (empty = no clock check),
+  `clock_max_offset_ms`.
+- `digest`: `schedule` (`off`, `daily`, `weekly`), `time` (`HH:MM`), `weekday` (`mon`..`sun`),
+  `timezone` (IANA name, empty = the server's), `notify[]` (`webhook`, `email`; empty = all).
 
 Server paths and process settings (`listen`, `public_url`, `auth`, `tls`, `log`, `storage.path`,
 `probing.icmp_mode`, `enrich.asn_db`) are only set in the config file.

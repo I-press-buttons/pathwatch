@@ -707,6 +707,12 @@ func TestHistoryEndpoints(t *testing.T) {
 	if !dnsData {
 		t.Error("no dns data")
 	}
+	if n, ok := dns[0]["samples"].(float64); !ok || n <= 0 {
+		t.Errorf("dns samples: %v", dns[0]["samples"])
+	}
+	if n, ok := dns[0]["failures"].(float64); !ok || n < 0 || n > dns[0]["samples"].(float64) {
+		t.Errorf("dns failures: %v", dns[0]["failures"])
+	}
 
 	// overview
 	var ov []map[string]any

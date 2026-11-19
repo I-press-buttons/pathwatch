@@ -100,6 +100,9 @@ export const api = {
   createSilence: (body) => request('POST', '/api/silences', { body, quiet: true }),
   deleteSilence: (id) => request('DELETE', `/api/silences/${id}`, { quiet: true }),
   channels: (o) => request('GET', '/api/channels', o),
+  profile: (o) => request('GET', '/api/profile', o),
+  putOverviewLayout: (body) => request('PUT', '/api/profile/overview', { body, quiet: true }),
+  resetOverviewLayout: () => request('DELETE', '/api/profile/overview', { quiet: true }),
   testChannel: (name) => request('POST', `/api/channels/${encodeURIComponent(name)}/test`, { quiet: true }),
 };
 

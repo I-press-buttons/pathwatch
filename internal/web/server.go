@@ -158,6 +158,9 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/silences", s.handleCreateSilence)
 	m.HandleFunc("DELETE /api/silences/{id}", s.handleDeleteSilence)
 	m.HandleFunc("GET /api/stream", s.handleStream)
+	m.HandleFunc("GET /api/profile", s.handleProfile)
+	m.HandleFunc("PUT /api/profile/overview", s.handlePutOverviewLayout)
+	m.HandleFunc("DELETE /api/profile/overview", s.handleDeleteOverviewLayout)
 	m.HandleFunc("/", s.handleUI)
 }
 

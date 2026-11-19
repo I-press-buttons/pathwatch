@@ -1,10 +1,14 @@
 // Overview: network verdict, one card per target, status strip, DNS probes, add/edit target.
-import { h, clear, isNum, fmtMs, fmtPct, fmtMos, fmtAgo, clamp, lsGet, lsSet, DASH, plural } from '../util.js';
-import { api, onStream, serverNow } from '../api.js';
+// The page is made of sections the user can reorder and hide: the pencil at the top right turns on
+// edit mode, where sections, target cards and DNS groups/cards are dragged into place; pressing it
+// again saves the layout to the user's profile on the server (GET/PUT /api/profile).
+import { h, svg, clear, isNum, fmtMs, fmtPct, fmtMos, clamp, lsGet, lsSet, DASH } from '../util.js';
+import { api, onStream } from '../api.js';
 import { getStatus, onStatus } from '../store.js';
-import { statusPill, sparkline, panel, confirmDialog, metricClass, WHERE } from '../ui.js';
+import { statusPill, sparkline, confirmDialog, metricClass, WHERE } from '../ui.js';
 import { dnsPanel } from './dns.js';
 import { openTargetEditor } from './target-editor.js';
+import { sortable, applyOrder } from '../sortable.js';
 import { publicIPCard } from './publicip.js';
 import { systemCard } from './system.js';
 
@@ -15,22 +19,135 @@ const SPARK_BUCKETS = 60;   // the sparkline overview is bucketed server side in
 const SEG_STATE = { ok: 'fine', warn: 'problem', crit: 'failing', unknown: 'not measured' };
 const SOON_MS = 300;        // SSE-triggered loads within this window collapse into one
 
+const SECTIONS = { network: 'Network verdict', status: 'Status summary', targets: 'Targets', dns: 'DNS probes' };
+function defaultLayout() {
+  return { sections: Object.keys(SECTIONS).map((id) => ({ id, hidden: false })), target_order: [], dns: { group_by: 'server' } };
+}
+/** a complete copy of a layout from the server (or the default when there is none) */
+function normLayout(l) {
+  const d = defaultLayout();
+  if (!l || typeof l !== 'object') return d;
+  const seen = new Set();
+  const secs = [];
+  for (const x of l.sections || []) if (SECTIONS[x.id] && !seen.has(x.id)) { seen.add(x.id); secs.push({ id: x.id, hidden: !!x.hidden }); }
+  for (const x of d.sections) if (!seen.has(x.id)) secs.push(x);
+  const dns = l.dns || {};
+  return {
+    sections: secs,
+    target_order: Array.isArray(l.target_order) ? l.target_order.slice() : [],
+    dns: { group_by: dns.group_by || 'server', probe_order: (dns.probe_order || []).slice(), group_order: { ...(dns.group_order || {}) } },
+  };
+}
+function pencilIcon() {
+  return svg('svg', { viewBox: '0 0 24 24', width: 16, height: 16, 'aria-hidden': 'true' },
+    svg('path', { d: 'M4 20h4L19 9l-4-4L4 16v4zM14 6l4 4', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+}
+function checkIcon() {
+  return svg('svg', { viewBox: '0 0 24 24', width: 16, height: 16, 'aria-hidden': 'true' },
+    svg('path', { d: 'M5 12l5 5L19 7', fill: 'none', stroke: 'currentColor', 'stroke-width': 2.4, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+}
+
 export function mount(root, ctx) {
   let range = lsGet('pathwatch.overviewRange', '1h');
   if (!RANGES.includes(range)) range = '1h';
   let targets = null, net = null, pub = null, netKey = '', spark = new Map(), loadedOnce = false, destroyed = false, timer = null, seq = 0;
   let busy = false, again = false, ctl = null, soon = null, sparkAt = 0, sparkRange = null;
+  let saved = defaultLayout(), layout = defaultLayout(), editing = false, saving = false;
 
   const rangeSel = h('select', { 'aria-label': 'Sparkline range', onchange: () => { range = rangeSel.value; lsSet('pathwatch.overviewRange', range); load({ fresh: true }); } },
     RANGES.map((r) => h('option', { value: r, selected: r === range }, 'Last ' + r)));
   const addBtn = h('button', { class: 'btn primary', onclick: () => openAddDialog() }, '+ Add target');
-  const head = h('div', { class: 'page-head' }, h('h1', null, 'Overview'), h('div', { class: 'grow' }), rangeSel, addBtn);
+  const editBtn = h('button', { type: 'button', class: 'btn icon-btn edit-toggle', onclick: () => (editing ? save() : startEdit()) });
+  const cancelBtn = h('button', { type: 'button', class: 'btn edit-only', onclick: () => cancelEdit() }, 'Cancel');
+  const resetBtn = h('button', { type: 'button', class: 'btn edit-only', onclick: () => { layout = defaultLayout(); applyLayout(); } }, 'Reset to default');
+  const editHint = h('div', { class: 'edit-hint edit-only', role: 'note' },
+    'Drag the ⠿ handles (or focus one and use the arrow keys) to arrange sections, target cards and DNS groups. Press ', checkIcon(), ' to save the layout to your profile.');
+  const head = h('div', { class: 'page-head' }, h('h1', null, 'Overview'), h('div', { class: 'grow' }), rangeSel, addBtn, resetBtn, cancelBtn, editBtn);
   const netEl = h('section', { class: 'diag net-verdict', hidden: true, 'aria-live': 'polite' });
   const stripEl = h('div', { class: 'strip' });
   const gridEl = h('div', { class: 'target-grid' });
   const msgEl = h('div', { class: 'state-msg', hidden: true });
-  const dns = dnsPanel({ title: 'DNS probes', range: () => range });
-  root.append(head, netEl, stripEl, msgEl, gridEl, dns.el);
+  const dns = dnsPanel({
+    title: 'DNS probes', range: () => range,
+    layout: () => layout.dns, editing: () => editing,
+    onLayoutChange: (patch) => { Object.assign(layout.dns, patch); },
+  });
+  const wrap = h('div', { class: 'overview' });
+  const sectionsEl = h('div', { class: 'ov-sections' });
+  const secEls = {};
+  const content = { network: [netEl], status: [stripEl], targets: [msgEl, gridEl], dns: [dns.el] };
+  for (const id of Object.keys(SECTIONS)) {
+    const hideBtn = h('button', { type: 'button', class: 'btn sm', onclick: () => toggleHidden(id) });
+    secEls[id] = { hideBtn, el: h('div', { class: 'ov-section', dataset: { key: id } },
+      h('div', { class: 'ov-edit-bar edit-only' },
+        h('button', { type: 'button', class: 'drag-handle', 'aria-label': 'Move section ' + SECTIONS[id] + ' (arrow keys)', title: 'Drag to move' }, '⠿'),
+        h('span', { class: 'ov-edit-title' }, SECTIONS[id]),
+        id === 'network' ? h('span', { class: 'muted ov-edit-note' }, 'shown when something needs attention') : null,
+        h('div', { class: 'grow' }), hideBtn),
+      content[id]) };
+    sectionsEl.append(secEls[id].el);
+  }
+  wrap.append(head, editHint, sectionsEl);
+  root.append(wrap);
+  const detach = [
+    sortable(sectionsEl, { items: '.ov-section', handle: '.ov-edit-bar .drag-handle', enabled: () => editing,
+      onChange: (order) => { const byId = new Map(layout.sections.map((x) => [x.id, x])); layout.sections = order.map((id) => byId.get(id)); } }),
+    sortable(gridEl, { items: '.tcard', handle: '.drag-handle', enabled: () => editing,
+      onChange: (order) => { layout.target_order = order.map(Number); } }),
+  ];
+
+  function shown(id) { const x = layout.sections.find((s) => s.id === id); return !x || !x.hidden; }
+  function toggleHidden(id) {
+    const x = layout.sections.find((s) => s.id === id);
+    if (x) x.hidden = !x.hidden;
+    applyLayout();
+  }
+  /** puts the sections in layout order, shows/hides them and re-renders the arranged lists */
+  function applyLayout() {
+    for (const x of layout.sections) {
+      const s = secEls[x.id];
+      sectionsEl.append(s.el);
+      s.el.classList.toggle('is-hidden', !!x.hidden);
+      s.hideBtn.textContent = x.hidden ? 'Show' : 'Hide';
+      s.hideBtn.setAttribute('aria-label', (x.hidden ? 'Show ' : 'Hide ') + SECTIONS[x.id]);
+    }
+    wrap.classList.toggle('editing', editing);
+    clear(editBtn).append(editing ? checkIcon() : pencilIcon(), h('span', { class: 'sr-only' }, editing ? 'Save layout' : 'Edit layout'));
+    editBtn.title = editing ? 'Save layout' : 'Edit layout';
+    editBtn.setAttribute('aria-pressed', editing ? 'true' : 'false');
+    editBtn.classList.toggle('primary', editing);
+    editBtn.disabled = saving;
+    renderGrid(true);
+    dns.render();
+  }
+  function startEdit() { layout = normLayout(saved); editing = true; applyLayout(); dns.load(); }
+  function cancelEdit() { layout = normLayout(saved); editing = false; applyLayout(); dns.load(); }
+  async function save() {
+    saving = true; applyLayout();
+    try {
+      const r = await api.putOverviewLayout(layout);
+      saved = normLayout(r && r.overview);
+      layout = normLayout(saved);
+      editing = false;
+    } catch (e) {
+      alert('Could not save the layout: ' + e.message);
+    } finally {
+      saving = false;
+      applyLayout();
+      if (!editing) { load(); dns.load(); }
+    }
+  }
+  function onKey(e) { if (editing && e.key === 'Escape' && !document.querySelector('dialog[open]')) cancelEdit(); }
+  document.addEventListener('keydown', onKey);
+  async function loadProfile() {
+    try {
+      const p = await api.profile({ quiet: true });
+      if (destroyed || editing) return;
+      saved = normLayout(p && p.overview);
+      layout = normLayout(saved);
+      applyLayout();
+    } catch (e) { /* keep the default layout */ }
+  }
 
   function renderStrip() {
     const s = getStatus();
@@ -63,8 +180,9 @@ export function mount(root, ctx) {
     act.append(h('span', { class: 'src', title: t.overridden ? 'Defined in the config file, with settings edited in the UI' : null },
       t.source === 'ui' ? 'added in UI' : t.overridden ? 'config · edited in UI' : 'from config'));
     const e2e = sm.e2e_rtt_ms;
-    return h('article', { class: 'card tcard' + (paused ? ' paused' : ''), dataset: { id: t.id } },
+    return h('article', { class: 'card tcard' + (paused ? ' paused' : ''), dataset: { id: t.id, key: String(t.id) } },
       h('div', { class: 'top' },
+        h('button', { type: 'button', class: 'drag-handle edit-only', 'aria-label': 'Move ' + t.name + ' (arrow keys)', title: 'Drag to move' }, '⠿'),
         h('div', { class: 'grow' },
           h('div', { class: 'name' }, h('a', { href: '#/target/' + t.id }, t.name)),
           h('div', { class: 'host' }, t.host + (t.resolved_ip && t.resolved_ip !== t.host ? ' · ' + t.resolved_ip : ''))),
@@ -116,6 +234,11 @@ export function mount(root, ctx) {
   function render() {
     renderNetwork();
     renderStrip();
+    renderGrid(false);
+  }
+  /** target cards in the layout's order; while editing they are only rebuilt on a layout change, so a drag is never cut short */
+  function renderGrid(layoutChanged) {
+    if (editing && !layoutChanged && gridEl.childElementCount) return;
     clear(gridEl);
     if (!targets) return;
     msgEl.hidden = true;
@@ -124,7 +247,7 @@ export function mount(root, ctx) {
       msgEl.append(h('h3', null, 'No targets yet'), h('p', null, 'Add a host to start tracing the network path to it. First results appear within a few seconds.'), h('button', { class: 'btn primary', onclick: () => openAddDialog() }, '+ Add target'));
       return;
     }
-    for (const t of targets) gridEl.append(targetCard(t));
+    for (const t of applyOrder(targets, layout.target_order, (x) => x.id)) gridEl.append(targetCard(t));
   }
 
   // The sparkline only changes once per bucket (range / 60), so it is refetched at most every min(max(10 s, step), 60 s),
@@ -182,12 +305,17 @@ export function mount(root, ctx) {
     onStream('targets', loadSoon),
     onStream('alert', loadSoon),
   ];
+  applyLayout();
+  loadProfile();
   load();
   dns.load();
   timer = setInterval(() => { load(); }, TARGETS_MS);
-  const dnsTimer = setInterval(() => dns.load(), 15000);
+  const dnsTimer = setInterval(() => { if (editing || shown('dns')) dns.load(); }, 15000);
 
   return {
-    destroy() { destroyed = true; clearInterval(timer); clearInterval(dnsTimer); clearTimeout(soon); if (ctl) ctl.abort(); offs.forEach((f) => f()); },
+    destroy() {
+      destroyed = true; clearInterval(timer); clearInterval(dnsTimer); clearTimeout(soon); if (ctl) ctl.abort();
+      offs.forEach((f) => f()); detach.forEach((f) => f()); document.removeEventListener('keydown', onKey);
+    },
   };
 }
